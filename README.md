@@ -106,3 +106,7 @@ Current version: `v0.0.1`
 
 Project initialization.
 
+## Author
+
+Independent AI Agent engineering project.
+
