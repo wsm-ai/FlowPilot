@@ -5,6 +5,7 @@ from app.services.planner_service import PlanningError
 
 
 PlanRoute = Literal["execute", "approval", "end"]
+ApprovalDecisionRoute = Literal["approve", "reject"]
 
 
 def route_plan_step(state: AgentState) -> PlanRoute:
@@ -22,3 +23,10 @@ def route_plan_step(state: AgentState) -> PlanRoute:
     if current_step.requires_approval:
         return "approval"
     return "execute"
+
+
+def route_approval_decision(state: AgentState) -> ApprovalDecisionRoute:
+    decision = state.get("approval_decision")
+    if decision not in {"approve", "reject"}:
+        raise PlanningError("Approval decision must be approve or reject")
+    return decision

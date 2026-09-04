@@ -63,3 +63,12 @@ def create_approval_node() -> ApprovalNode:
         }
 
     return approval_node
+
+
+def create_reject_approval_node() -> ApprovalNode:
+    async def reject_approval_node(state: AgentState) -> dict[str, object]:
+        if state.get("approval_decision") != "reject":
+            raise PlanningError("Rejected path requires a reject decision")
+        return {"route": "reject"}
+
+    return reject_approval_node
