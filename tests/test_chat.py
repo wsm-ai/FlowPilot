@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.chat import get_llm_service
+from app.api.dependencies import get_llm_service
 from app.main import app
 from app.providers.base import LLMProviderError
 
