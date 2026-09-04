@@ -3,8 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.dependencies import get_llm_service
 from app.providers.base import LLMProviderError
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
+from app.schemas.planned_agent import PlannedAgentRunRequest, PlannedAgentRunResponse
 from app.services.graph_agent_service import GraphAgentService
 from app.services.llm_service import LLMService
+from app.services.planned_agent_service import PlannedAgentService
+from app.services.planner_service import PlannerService, PlanningError
 from app.tools.base import ToolExecutionError
 from app.tools.registry import create_default_tool_registry
 
@@ -17,6 +20,15 @@ def get_graph_agent_service(
 ) -> GraphAgentService:
     return GraphAgentService(
         llm_service=llm_service,
+        registry=create_default_tool_registry(),
+    )
+
+
+def get_planned_agent_service(
+    llm_service: LLMService = Depends(get_llm_service),
+) -> PlannedAgentService:
+    return PlannedAgentService(
+        planner_service=PlannerService(llm_service),
         registry=create_default_tool_registry(),
     )
 
@@ -49,4 +61,35 @@ async def run_agent(
             )
             for tool in result.executed_tools
         ],
+    )
+
+
+@router.post("/plan-run", response_model=PlannedAgentRunResponse)
+async def run_planned_agent(
+    request: PlannedAgentRunRequest,
+    service: PlannedAgentService = Depends(get_planned_agent_service),
+) -> PlannedAgentRunResponse:
+    try:
+        result = await service.run(request.goal)
+    except PlanningError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to execute the requested plan",
+        ) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The language model service is unavailable",
+        ) from exc
+    except ToolExecutionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Plan step execution failed",
+        ) from exc
+
+    return PlannedAgentRunResponse(
+        plan=result.plan,
+        status=result.status,
+        current_step_index=result.current_step_index,
+        step_results=result.step_results,
     )
