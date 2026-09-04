@@ -1,19 +1,22 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.agent import get_tool_calling_service
+from app.api.agent import get_graph_agent_service
 from app.main import app
 from app.providers.base import LLMProviderError
-from app.services.tool_calling_service import ExecutedTool, ToolCallingResult
+from app.services.graph_agent_service import (
+    GraphAgentResult,
+    GraphExecutedTool,
+)
 from app.tools.base import ToolExecutionError
 
 
-class FakeToolCallingService:
-    async def run(self, message: str) -> ToolCallingResult:
-        return ToolCallingResult(
+class FakeGraphAgentService:
+    async def run(self, message: str) -> GraphAgentResult:
+        return GraphAgentResult(
             answer="Customer C001 has two high-priority issues.",
             executed_tools=[
-                ExecutedTool(
+                GraphExecutedTool(
                     tool_call_id="call_123",
                     name="get_customer_feedback",
                     arguments={"customer_id": "C001", "priority": "high"},
@@ -22,18 +25,16 @@ class FakeToolCallingService:
         )
 
 
-def override_tool_calling_service() -> FakeToolCallingService:
-    return FakeToolCallingService()
+def override_graph_agent_service() -> FakeGraphAgentService:
+    return FakeGraphAgentService()
 
 
 @pytest.fixture
 def client():
-    app.dependency_overrides[
-        get_tool_calling_service
-    ] = override_tool_calling_service
+    app.dependency_overrides[get_graph_agent_service] = override_graph_agent_service
     with TestClient(app) as test_client:
         yield test_client
-    app.dependency_overrides.pop(get_tool_calling_service, None)
+    app.dependency_overrides.pop(get_graph_agent_service, None)
 
 
 def test_agent_returns_answer_and_executed_tools(client: TestClient):
@@ -57,10 +58,10 @@ def test_agent_returns_answer_and_executed_tools(client: TestClient):
 
 def test_agent_returns_direct_answer_without_executed_tools(client: TestClient):
     class DirectAnswerService:
-        async def run(self, message: str) -> ToolCallingResult:
-            return ToolCallingResult(answer="Direct answer")
+        async def run(self, message: str) -> GraphAgentResult:
+            return GraphAgentResult(answer="Direct answer")
 
-    app.dependency_overrides[get_tool_calling_service] = DirectAnswerService
+    app.dependency_overrides[get_graph_agent_service] = DirectAnswerService
 
     response = client.post("/api/v1/agent/run", json={"message": "Hello"})
 
@@ -80,10 +81,10 @@ def test_agent_rejects_empty_or_blank_message(client: TestClient, message: str):
 
 def test_agent_hides_provider_error(client: TestClient):
     class FailingProviderService:
-        async def run(self, message: str) -> ToolCallingResult:
+        async def run(self, message: str) -> GraphAgentResult:
             raise LLMProviderError("sensitive provider error")
 
-    app.dependency_overrides[get_tool_calling_service] = FailingProviderService
+    app.dependency_overrides[get_graph_agent_service] = FailingProviderService
 
     response = client.post("/api/v1/agent/run", json={"message": "Hello"})
 
@@ -96,10 +97,10 @@ def test_agent_hides_provider_error(client: TestClient):
 
 def test_agent_hides_tool_error(client: TestClient):
     class FailingToolService:
-        async def run(self, message: str) -> ToolCallingResult:
+        async def run(self, message: str) -> GraphAgentResult:
             raise ToolExecutionError("sensitive tool error")
 
-    app.dependency_overrides[get_tool_calling_service] = FailingToolService
+    app.dependency_overrides[get_graph_agent_service] = FailingToolService
 
     response = client.post("/api/v1/agent/run", json={"message": "Hello"})
 
