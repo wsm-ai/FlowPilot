@@ -7,3 +7,4 @@ pydantic-settings
 python-dotenv
 langgraph
 aiosqlite
+langgraph-checkpoint-sqlite
