@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from app.graph.workflow import create_basic_agent_graph
+from app.providers.base import LLMProviderError
 from app.providers.types import LLMResponse, LLMToolCall
 from app.services.llm_service import LLMService
 from app.tools.base import ToolExecutionError
@@ -13,8 +14,8 @@ from app.tools.registry import create_default_tool_registry
 class FakeProvider:
     model = "test-model"
 
-    def __init__(self, response: LLMResponse) -> None:
-        self.response = response
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        self._responses = iter(responses)
         self.requests: list[dict[str, Any]] = []
 
     async def complete(self, messages, tools=None, tool_choice=None) -> LLMResponse:
@@ -25,11 +26,11 @@ class FakeProvider:
                 "tool_choice": tool_choice,
             }
         )
-        return self.response
+        return next(self._responses)
 
 
-def create_graph(response: LLMResponse):
-    provider = FakeProvider(response)
+def create_graph(*responses: LLMResponse):
+    provider = FakeProvider(list(responses))
     registry = create_default_tool_registry()
     graph = create_basic_agent_graph(LLMService(provider), registry)
     return graph, provider
@@ -56,7 +57,7 @@ def test_basic_agent_graph_compiles():
     graph, _ = create_graph(LLMResponse(content="Hello"))
 
     assert graph is not None
-    assert {"llm", "tools"}.issubset(graph.get_graph().nodes)
+    assert {"llm", "tools", "final_llm"}.issubset(graph.get_graph().nodes)
 
 
 def test_direct_answer_routes_to_end_without_executing_tools():
@@ -77,18 +78,24 @@ def test_direct_answer_routes_to_end_without_executing_tools():
 
 
 def test_tool_call_routes_to_tool_node_and_updates_state():
-    response = LLMResponse(
+    selection_response = LLMResponse(
         content=None,
         tool_calls=[
             feedback_call('{"customer_id":"C001","priority":"high"}')
         ],
     )
-    graph, provider = create_graph(response)
+    final_response = LLMResponse(
+        content="Customer C001 has two high-priority issues."
+    )
+    graph, provider = create_graph(selection_response, final_response)
 
     result = asyncio.run(graph.ainvoke(initial_state("Find C001 high feedback")))
 
-    assert len(provider.requests) == 1
-    assert result["answer"] is None
+    assert len(provider.requests) == 2
+    assert provider.requests[0]["tool_choice"] == "auto"
+    assert provider.requests[1]["tool_choice"] == "none"
+    assert result["answer"] == "Customer C001 has two high-priority issues."
+    assert result["llm_response"] is final_response
     assert result["executed_tools"] == [
         {
             "tool_call_id": "call_123",
@@ -96,30 +103,42 @@ def test_tool_call_routes_to_tool_node_and_updates_state():
             "arguments": {"customer_id": "C001", "priority": "high"},
         }
     ]
-    assistant_message = result["messages"][1]
+    second_request_messages = provider.requests[1]["messages"]
+    assert second_request_messages[0]["role"] == "user"
+    assistant_message = second_request_messages[1]
     assert assistant_message["role"] == "assistant"
     assert assistant_message["tool_calls"][0]["id"] == "call_123"
-    tool_message = result["messages"][2]
+    tool_message = second_request_messages[2]
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == "call_123"
     assert "FB-001" in tool_message["content"]
     assert "FB-003" in tool_message["content"]
+    assert result["messages"][-1] == {
+        "role": "assistant",
+        "content": "Customer C001 has two high-priority issues.",
+    }
 
 
 def test_tool_call_content_is_not_treated_as_final_answer():
-    response = LLMResponse(
+    selection_response = LLMResponse(
         content="I'll query the customer feedback.",
         tool_calls=[
             feedback_call('{"customer_id":"C001","priority":"high"}')
         ],
     )
-    graph, _ = create_graph(response)
+    graph, provider = create_graph(
+        selection_response,
+        LLMResponse(content="Final answer"),
+    )
 
     result = asyncio.run(graph.ainvoke(initial_state("Find C001 high feedback")))
 
-    assert result["answer"] is None
+    assert result["answer"] == "Final answer"
     assert result["executed_tools"][0]["name"] == "get_customer_feedback"
-    tool_message = result["messages"][-1]
+    assert provider.requests[1]["messages"][1]["content"] == (
+        "I'll query the customer feedback."
+    )
+    tool_message = provider.requests[1]["messages"][-1]
     assert tool_message["role"] == "tool"
     assert "FB-001" in tool_message["content"]
     assert "FB-003" in tool_message["content"]
@@ -142,3 +161,22 @@ def test_tool_node_rejects_unknown_tool():
 
     with pytest.raises(ToolExecutionError):
         asyncio.run(graph.ainvoke(initial_state("Use unknown tool")))
+
+
+@pytest.mark.parametrize("content", [None, ""])
+def test_final_llm_requires_content(content: str | None):
+    graph, provider = create_graph(
+        LLMResponse(
+            content=None,
+            tool_calls=[
+                feedback_call('{"customer_id":"C001","priority":"high"}')
+            ],
+        ),
+        LLMResponse(content=content),
+    )
+
+    with pytest.raises(LLMProviderError):
+        asyncio.run(graph.ainvoke(initial_state("Find feedback")))
+
+    assert len(provider.requests) == 2
+    assert provider.requests[1]["tool_choice"] == "none"

@@ -2,6 +2,7 @@ import json
 from typing import Any, Awaitable, Callable, Literal
 
 from app.graph.state import AgentState
+from app.providers.base import LLMProviderError
 from app.services.llm_service import LLMService
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
@@ -98,3 +99,32 @@ def create_tool_node(
         }
 
     return tool_node
+
+
+def create_final_llm_node(
+    llm_service: LLMService,
+    tools: list[dict[str, Any]],
+) -> Callable[[AgentState], Awaitable[dict[str, Any]]]:
+    async def final_llm_node(state: AgentState) -> dict[str, Any]:
+        final_response = await llm_service.complete(
+            messages=state["messages"],
+            tools=tools,
+            tool_choice="none",
+        )
+        if not final_response.content:
+            raise LLMProviderError("The language model returned no final answer")
+
+        messages = list(state["messages"])
+        messages.append(
+            {
+                "role": "assistant",
+                "content": final_response.content,
+            }
+        )
+        return {
+            "llm_response": final_response,
+            "answer": final_response.content,
+            "messages": messages,
+        }
+
+    return final_llm_node
