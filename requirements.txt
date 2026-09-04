@@ -6,3 +6,4 @@ openai
 pydantic-settings
 python-dotenv
 langgraph
+aiosqlite
