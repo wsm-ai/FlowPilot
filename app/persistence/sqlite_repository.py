@@ -11,7 +11,13 @@ from app.persistence.repository import PersistenceError
 
 
 VALID_RUN_MODES = {"reactive", "planned"}
-VALID_RUN_STATUSES = {"running", "completed", "approval_required", "failed"}
+VALID_RUN_STATUSES = {
+    "running",
+    "completed",
+    "approval_required",
+    "rejected",
+    "failed",
+}
 
 
 class SQLiteRunRepository:
@@ -32,10 +38,17 @@ class SQLiteRunRepository:
                         result_json TEXT NULL,
                         error_type TEXT NULL,
                         created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
+                        updated_at TEXT NOT NULL,
+                        thread_id TEXT NULL
                     )
                     """
                 )
+                cursor = await database.execute("PRAGMA table_info(agent_runs)")
+                columns = {row[1] for row in await cursor.fetchall()}
+                if "thread_id" not in columns:
+                    await database.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN thread_id TEXT"
+                    )
                 await database.commit()
         except (OSError, sqlite3.Error) as exc:
             raise PersistenceError("Unable to initialize run persistence") from exc
@@ -49,8 +62,8 @@ class SQLiteRunRepository:
                     """
                     INSERT INTO agent_runs (
                         run_id, mode, input_text, status, result_json,
-                        error_type, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        error_type, created_at, updated_at, thread_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.run_id,
@@ -61,6 +74,7 @@ class SQLiteRunRepository:
                         record.error_type,
                         record.created_at.isoformat(),
                         record.updated_at.isoformat(),
+                        record.thread_id,
                     ),
                 )
                 await database.commit()
@@ -132,6 +146,7 @@ class SQLiteRunRepository:
             error_type=error_type,
             created_at=self._parse_datetime(existing["created_at"]),
             updated_at=updated_at,
+            thread_id=existing["thread_id"],
         )
 
     async def list_recent(self, limit: int = 20) -> list[AgentRunRecord]:
@@ -187,6 +202,7 @@ class SQLiteRunRepository:
                 error_type=row["error_type"],
                 created_at=cls._parse_datetime(row["created_at"]),
                 updated_at=cls._parse_datetime(row["updated_at"]),
+                thread_id=row["thread_id"],
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise PersistenceError("Stored agent run is invalid") from exc

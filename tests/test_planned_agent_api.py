@@ -1,15 +1,21 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.agent import get_approval_workflow_service
+from app.api.agent import get_persistent_approval_workflow_service
 from app.main import app
+from app.persistence.repository import PersistenceError
 from app.providers.base import LLMProviderError
 from app.schemas.planning import ExecutionPlan, PlanStep
 from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalThreadConflictError,
     ApprovalThreadNotFoundError,
-    ApprovalWorkflowResult,
+)
+from app.services.persistent_approval_workflow_service import (
+    ApprovalRunNotFoundError,
+    ApprovalRunNotPendingError,
+    ApprovalRunThreadMismatchError,
+    PersistentApprovalWorkflowResult,
 )
 from app.services.planner_service import PlanningError
 from app.tools.base import ToolExecutionError
@@ -28,14 +34,15 @@ PLAN = ExecutionPlan(
 )
 
 
-class FakeApprovalWorkflowService:
+class FakePersistentApprovalWorkflowService:
     async def start(
         self,
         goal: str,
         *,
         thread_id: str | None = None,
-    ) -> ApprovalWorkflowResult:
-        return ApprovalWorkflowResult(
+    ) -> PersistentApprovalWorkflowResult:
+        return PersistentApprovalWorkflowResult(
+            run_id="run-123",
             thread_id=thread_id or "generated-thread",
             plan=PLAN,
             status="completed",
@@ -50,8 +57,11 @@ class FakeApprovalWorkflowService:
             pending_approval=None,
         )
 
-    async def resume(self, thread_id: str, decision: str) -> ApprovalWorkflowResult:
-        return ApprovalWorkflowResult(
+    async def resume(
+        self, run_id: str, thread_id: str, decision: str
+    ) -> PersistentApprovalWorkflowResult:
+        return PersistentApprovalWorkflowResult(
+            run_id=run_id,
             thread_id=thread_id,
             plan=PLAN,
             status="completed" if decision == "approve" else "rejected",
@@ -64,11 +74,11 @@ class FakeApprovalWorkflowService:
 @pytest.fixture
 def client():
     app.dependency_overrides[
-        get_approval_workflow_service
-    ] = FakeApprovalWorkflowService
+        get_persistent_approval_workflow_service
+    ] = FakePersistentApprovalWorkflowService
     with TestClient(app) as test_client:
         yield test_client
-    app.dependency_overrides.pop(get_approval_workflow_service, None)
+    app.dependency_overrides.pop(get_persistent_approval_workflow_service, None)
 
 
 def test_plan_run_returns_structured_result(client: TestClient):
@@ -79,6 +89,7 @@ def test_plan_run_returns_structured_result(client: TestClient):
 
     assert response.status_code == 200
     body = response.json()
+    assert body["run_id"] == "run-123"
     assert body["thread_id"] == "generated-thread"
     assert body["plan"]["goal"] == "Review feedback"
     assert body["status"] == "completed"
@@ -125,6 +136,11 @@ def test_plan_run_rejects_invalid_thread_id(client: TestClient, thread_id: str):
             500,
             "Plan step execution failed",
         ),
+        (
+            PersistenceError("sensitive persistence error"),
+            500,
+            "Agent persistence failed",
+        ),
     ],
 )
 def test_plan_run_maps_errors_without_leaking_details(
@@ -137,7 +153,7 @@ def test_plan_run_maps_errors_without_leaking_details(
         async def start(self, goal: str, *, thread_id=None):
             raise error
 
-    app.dependency_overrides[get_approval_workflow_service] = FailingService
+    app.dependency_overrides[get_persistent_approval_workflow_service] = FailingService
 
     response = client.post(
         "/api/v1/agent/plan-run",
@@ -154,7 +170,7 @@ def test_plan_run_maps_thread_conflict_without_leaking_details(client: TestClien
         async def start(self, goal: str, *, thread_id=None):
             raise ApprovalThreadConflictError("sensitive conflict")
 
-    app.dependency_overrides[get_approval_workflow_service] = FailingService
+    app.dependency_overrides[get_persistent_approval_workflow_service] = FailingService
     response = client.post(
         "/api/v1/agent/plan-run",
         json={"goal": "Review feedback", "thread_id": "existing"},
@@ -169,11 +185,16 @@ def test_plan_run_maps_thread_conflict_without_leaking_details(client: TestClien
 def test_approval_resume_returns_unified_response(client: TestClient, decision: str):
     response = client.post(
         "/api/v1/agent/approval/resume",
-        json={"thread_id": "approval-thread", "decision": decision},
+        json={
+            "run_id": "run-123",
+            "thread_id": "approval-thread",
+            "decision": decision,
+        },
     )
 
     assert response.status_code == 200
     body = response.json()
+    assert body["run_id"] == "run-123"
     assert body["thread_id"] == "approval-thread"
     assert body["status"] == ("completed" if decision == "approve" else "rejected")
     assert body["pending_approval"] is None
@@ -182,9 +203,12 @@ def test_approval_resume_returns_unified_response(client: TestClient, decision: 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"thread_id": "approval-thread", "decision": "maybe"},
-        {"thread_id": "", "decision": "approve"},
-        {"thread_id": "   ", "decision": "approve"},
+        {"run_id": "run-123", "thread_id": "approval-thread", "decision": "maybe"},
+        {"run_id": "run-123", "thread_id": "", "decision": "approve"},
+        {"run_id": "run-123", "thread_id": "   ", "decision": "approve"},
+        {"run_id": "", "thread_id": "approval-thread", "decision": "approve"},
+        {"run_id": "   ", "thread_id": "approval-thread", "decision": "approve"},
+        {"run_id": "x" * 201, "thread_id": "approval-thread", "decision": "approve"},
     ],
 )
 def test_approval_resume_rejects_invalid_request(client: TestClient, payload):
@@ -199,9 +223,13 @@ def test_approval_resume_rejects_invalid_request(client: TestClient, payload):
         (ApprovalThreadNotFoundError("sensitive missing"), 404, "Approval thread not found"),
         (ApprovalThreadConflictError("sensitive conflict"), 409, "Approval thread already exists"),
         (ApprovalNotPendingError("sensitive pending"), 409, "No pending approval for this thread"),
+        (ApprovalRunNotFoundError("sensitive run"), 404, "Approval run not found"),
+        (ApprovalRunThreadMismatchError("sensitive mismatch"), 409, "Run does not match approval thread"),
+        (ApprovalRunNotPendingError("sensitive run status"), 409, "Approval run is not pending"),
         (PlanningError("sensitive planning"), 400, "Unable to execute the requested plan"),
         (ToolExecutionError("sensitive tool"), 500, "Plan step execution failed"),
         (LLMProviderError("sensitive llm"), 502, "The language model service is unavailable"),
+        (PersistenceError("sensitive persistence"), 500, "Agent persistence failed"),
     ],
 )
 def test_approval_resume_maps_errors_without_leaking_details(
@@ -211,13 +239,17 @@ def test_approval_resume_maps_errors_without_leaking_details(
     detail: str,
 ):
     class FailingService:
-        async def resume(self, thread_id: str, decision: str):
+        async def resume(self, run_id: str, thread_id: str, decision: str):
             raise error
 
-    app.dependency_overrides[get_approval_workflow_service] = FailingService
+    app.dependency_overrides[get_persistent_approval_workflow_service] = FailingService
     response = client.post(
         "/api/v1/agent/approval/resume",
-        json={"thread_id": "approval-thread", "decision": "approve"},
+        json={
+            "run_id": "run-123",
+            "thread_id": "approval-thread",
+            "decision": "approve",
+        },
     )
 
     assert response.status_code == status_code

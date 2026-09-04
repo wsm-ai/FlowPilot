@@ -5,7 +5,13 @@ from uuid import uuid4
 
 
 RunMode = Literal["reactive", "planned"]
-RunStatus = Literal["running", "completed", "approval_required", "failed"]
+RunStatus = Literal[
+    "running",
+    "completed",
+    "approval_required",
+    "rejected",
+    "failed",
+]
 
 
 @dataclass(slots=True)
@@ -18,9 +24,14 @@ class AgentRunRecord:
     error_type: str | None
     created_at: datetime
     updated_at: datetime
+    thread_id: str | None = None
 
 
-def create_agent_run_record(mode: RunMode, input_text: str) -> AgentRunRecord:
+def create_agent_run_record(
+    mode: RunMode,
+    input_text: str,
+    thread_id: str | None = None,
+) -> AgentRunRecord:
     now = datetime.now(timezone.utc)
     return AgentRunRecord(
         run_id=str(uuid4()),
@@ -31,4 +42,5 @@ def create_agent_run_record(mode: RunMode, input_text: str) -> AgentRunRecord:
         error_type=None,
         created_at=now,
         updated_at=now,
+        thread_id=thread_id,
     )

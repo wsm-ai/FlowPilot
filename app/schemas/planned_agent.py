@@ -25,6 +25,7 @@ class PlannedAgentRunRequest(BaseModel):
 
 
 class PlannedAgentRunResponse(BaseModel):
+    run_id: str
     thread_id: str
     plan: ExecutionPlan
     status: Literal["completed", "approval_required", "rejected"]
@@ -34,12 +35,13 @@ class PlannedAgentRunResponse(BaseModel):
 
 
 class ApprovalResumeRequest(BaseModel):
+    run_id: str = Field(min_length=1, max_length=200)
     thread_id: str = Field(min_length=1, max_length=200)
     decision: Literal["approve", "reject"]
 
-    @field_validator("thread_id")
+    @field_validator("run_id", "thread_id")
     @classmethod
-    def thread_id_must_not_be_blank(cls, value: str) -> str:
+    def identifier_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("thread_id must not be blank")
+            raise ValueError("identifier must not be blank")
         return value

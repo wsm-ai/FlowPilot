@@ -18,7 +18,6 @@ from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalThreadConflictError,
     ApprovalThreadNotFoundError,
-    ApprovalWorkflowResult,
     ApprovalWorkflowService,
 )
 from app.services.graph_agent_service import GraphAgentService
@@ -26,6 +25,13 @@ from app.services.llm_service import LLMService
 from app.services.planned_agent_service import PlannedAgentService
 from app.services.planner_service import PlannerService, PlanningError
 from app.services.persistent_agent_service import PersistentAgentService
+from app.services.persistent_approval_workflow_service import (
+    ApprovalRunNotFoundError,
+    ApprovalRunNotPendingError,
+    ApprovalRunThreadMismatchError,
+    PersistentApprovalWorkflowResult,
+    PersistentApprovalWorkflowService,
+)
 from app.tools.base import ToolExecutionError
 from app.tools.registry import create_default_tool_registry
 
@@ -71,10 +77,20 @@ def get_approval_workflow_service(
     )
 
 
+def get_persistent_approval_workflow_service(
+    workflow_service: ApprovalWorkflowService = Depends(
+        get_approval_workflow_service
+    ),
+    run_repository: RunRepository = Depends(get_run_repository),
+) -> PersistentApprovalWorkflowService:
+    return PersistentApprovalWorkflowService(workflow_service, run_repository)
+
+
 def _planned_agent_response(
-    result: ApprovalWorkflowResult,
+    result: PersistentApprovalWorkflowResult,
 ) -> PlannedAgentRunResponse:
     return PlannedAgentRunResponse(
+        run_id=result.run_id,
         thread_id=result.thread_id,
         plan=result.plan,
         status=result.status,
@@ -124,7 +140,9 @@ async def run_agent(
 @router.post("/plan-run", response_model=PlannedAgentRunResponse)
 async def run_planned_agent(
     request: PlannedAgentRunRequest,
-    service: ApprovalWorkflowService = Depends(get_approval_workflow_service),
+    service: PersistentApprovalWorkflowService = Depends(
+        get_persistent_approval_workflow_service
+    ),
 ) -> PlannedAgentRunResponse:
     try:
         result = await service.start(request.goal, thread_id=request.thread_id)
@@ -148,6 +166,11 @@ async def run_planned_agent(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Plan step execution failed",
         ) from exc
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Agent persistence failed",
+        ) from exc
 
     return _planned_agent_response(result)
 
@@ -155,10 +178,31 @@ async def run_planned_agent(
 @router.post("/approval/resume", response_model=PlannedAgentRunResponse)
 async def resume_planned_agent(
     request: ApprovalResumeRequest,
-    service: ApprovalWorkflowService = Depends(get_approval_workflow_service),
+    service: PersistentApprovalWorkflowService = Depends(
+        get_persistent_approval_workflow_service
+    ),
 ) -> PlannedAgentRunResponse:
     try:
-        result = await service.resume(request.thread_id, request.decision)
+        result = await service.resume(
+            request.run_id,
+            request.thread_id,
+            request.decision,
+        )
+    except ApprovalRunNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approval run not found",
+        ) from exc
+    except ApprovalRunThreadMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Run does not match approval thread",
+        ) from exc
+    except ApprovalRunNotPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approval run is not pending",
+        ) from exc
     except ApprovalThreadNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -188,6 +232,11 @@ async def resume_planned_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Plan step execution failed",
+        ) from exc
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Agent persistence failed",
         ) from exc
 
     return _planned_agent_response(result)
