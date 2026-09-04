@@ -18,10 +18,18 @@ def create_llm_node(
             tools=tools,
             tool_choice="auto",
         )
-        return {
+        update: dict[str, Any] = {
             "llm_response": response,
             "answer": None if response.tool_calls else response.content,
         }
+        if not response.tool_calls and response.content:
+            update["messages"] = [
+                {
+                    "role": "assistant",
+                    "content": response.content,
+                }
+            ]
+        return update
 
     return llm_node
 
@@ -41,8 +49,7 @@ def create_tool_node(
         if response is None:
             raise ToolExecutionError("Cannot execute tools without an LLM response")
 
-        messages = list(state["messages"])
-        messages.append(
+        new_messages: list[dict[str, Any]] = [
             {
                 "role": "assistant",
                 "content": response.content,
@@ -58,7 +65,7 @@ def create_tool_node(
                     for tool_call in response.tool_calls
                 ],
             }
-        )
+        ]
 
         executed_tools = list(state["executed_tools"])
         for tool_call in response.tool_calls:
@@ -85,7 +92,7 @@ def create_tool_node(
                     "arguments": arguments,
                 }
             )
-            messages.append(
+            new_messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -94,7 +101,7 @@ def create_tool_node(
             )
 
         return {
-            "messages": messages,
+            "messages": new_messages,
             "executed_tools": executed_tools,
         }
 
@@ -114,17 +121,15 @@ def create_final_llm_node(
         if not final_response.content:
             raise LLMProviderError("The language model returned no final answer")
 
-        messages = list(state["messages"])
-        messages.append(
-            {
-                "role": "assistant",
-                "content": final_response.content,
-            }
-        )
         return {
             "llm_response": final_response,
             "answer": final_response.content,
-            "messages": messages,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": final_response.content,
+                }
+            ],
         }
 
     return final_llm_node

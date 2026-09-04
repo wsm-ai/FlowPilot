@@ -1,5 +1,6 @@
 from typing import cast
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.execution_nodes import create_plan_step_executor
@@ -17,7 +18,10 @@ def _route_from_state(state: AgentState) -> PlanRoute:
     return cast(PlanRoute, state["route"])
 
 
-def create_plan_execution_graph(registry: ToolRegistry):
+def create_plan_execution_graph(
+    registry: ToolRegistry,
+    checkpointer: BaseCheckpointSaver | None = None,
+):
     builder = StateGraph(AgentState)
     builder.add_node("router_entry", _record_route)
     builder.add_node("execute_step", create_plan_step_executor(registry))
@@ -34,4 +38,4 @@ def create_plan_execution_graph(registry: ToolRegistry):
     )
     builder.add_edge("execute_step", "router_entry")
     builder.add_edge("approval_marker", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

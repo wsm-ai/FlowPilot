@@ -1,11 +1,12 @@
-from typing import Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
+from app.graph.reducers import add_messages
 from app.providers.types import LLMResponse
 from app.schemas.planning import ExecutionPlan
 
 
 class AgentState(TypedDict):
-    messages: list[dict[str, Any]]
+    messages: Annotated[list[dict[str, Any]], add_messages]
     llm_response: LLMResponse | None
     answer: str | None
     executed_tools: list[dict[str, Any]]
