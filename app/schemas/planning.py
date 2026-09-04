@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -8,6 +10,7 @@ class PlanStep(BaseModel):
         min_length=1,
         pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
     )
+    arguments: dict[str, Any] = Field(default_factory=dict)
     requires_approval: bool = False
 
     @field_validator("description")

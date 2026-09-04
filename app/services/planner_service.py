@@ -18,11 +18,15 @@ Return strict JSON with exactly this structure:
       "id": 1,
       "description": "...",
       "action": "snake_case_action",
+      "arguments": {},
       "requires_approval": false
     }
   ]
 }
 Use concise, machine-readable snake_case values for action.
+For tool-like actions, provide the structured arguments required to execute the action.
+If an action needs no arguments, return an empty object for arguments.
+Do not invent execution results. Only create the action and its arguments.
 Do not include Markdown fences or text outside the JSON object."""
 
 

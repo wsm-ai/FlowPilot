@@ -22,6 +22,7 @@ VALID_PLAN = {
             "id": 1,
             "description": "Retrieve high-priority customer feedback",
             "action": "get_customer_feedback",
+            "arguments": {"customer_id": "C001", "priority": "high"},
             "requires_approval": False,
         },
         {
@@ -79,6 +80,10 @@ def test_valid_json_is_parsed_into_execution_plan():
     assert [step.id for step in plan.steps] == [1, 2, 3, 4]
     assert plan.steps[0].description == "Retrieve high-priority customer feedback"
     assert plan.steps[0].action == "get_customer_feedback"
+    assert plan.steps[0].arguments == {
+        "customer_id": "C001",
+        "priority": "high",
+    }
     assert plan.steps[0].requires_approval is False
     assert plan.steps[3].requires_approval is True
     assert provider.requests[0]["messages"][0]["role"] == "system"
