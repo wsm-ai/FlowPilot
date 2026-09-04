@@ -9,7 +9,18 @@ from app.api.dependencies import (
 from app.persistence.repository import PersistenceError, RunRepository
 from app.providers.base import LLMProviderError
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
-from app.schemas.planned_agent import PlannedAgentRunRequest, PlannedAgentRunResponse
+from app.schemas.planned_agent import (
+    ApprovalResumeRequest,
+    PlannedAgentRunRequest,
+    PlannedAgentRunResponse,
+)
+from app.services.approval_workflow_service import (
+    ApprovalNotPendingError,
+    ApprovalThreadConflictError,
+    ApprovalThreadNotFoundError,
+    ApprovalWorkflowResult,
+    ApprovalWorkflowService,
+)
 from app.services.graph_agent_service import GraphAgentService
 from app.services.llm_service import LLMService
 from app.services.planned_agent_service import PlannedAgentService
@@ -46,6 +57,30 @@ def get_planned_agent_service(
     return PlannedAgentService(
         planner_service=PlannerService(llm_service),
         registry=create_default_tool_registry(),
+    )
+
+
+def get_approval_workflow_service(
+    llm_service: LLMService = Depends(get_llm_service),
+    checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
+) -> ApprovalWorkflowService:
+    return ApprovalWorkflowService(
+        planner_service=PlannerService(llm_service),
+        registry=create_default_tool_registry(),
+        checkpointer=checkpointer,
+    )
+
+
+def _planned_agent_response(
+    result: ApprovalWorkflowResult,
+) -> PlannedAgentRunResponse:
+    return PlannedAgentRunResponse(
+        thread_id=result.thread_id,
+        plan=result.plan,
+        status=result.status,
+        current_step_index=result.current_step_index,
+        step_results=result.step_results,
+        pending_approval=result.pending_approval,
     )
 
 
@@ -89,10 +124,15 @@ async def run_agent(
 @router.post("/plan-run", response_model=PlannedAgentRunResponse)
 async def run_planned_agent(
     request: PlannedAgentRunRequest,
-    service: PlannedAgentService = Depends(get_planned_agent_service),
+    service: ApprovalWorkflowService = Depends(get_approval_workflow_service),
 ) -> PlannedAgentRunResponse:
     try:
-        result = await service.run(request.goal)
+        result = await service.start(request.goal, thread_id=request.thread_id)
+    except ApprovalThreadConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approval thread already exists",
+        ) from exc
     except PlanningError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -109,9 +149,45 @@ async def run_planned_agent(
             detail="Plan step execution failed",
         ) from exc
 
-    return PlannedAgentRunResponse(
-        plan=result.plan,
-        status=result.status,
-        current_step_index=result.current_step_index,
-        step_results=result.step_results,
-    )
+    return _planned_agent_response(result)
+
+
+@router.post("/approval/resume", response_model=PlannedAgentRunResponse)
+async def resume_planned_agent(
+    request: ApprovalResumeRequest,
+    service: ApprovalWorkflowService = Depends(get_approval_workflow_service),
+) -> PlannedAgentRunResponse:
+    try:
+        result = await service.resume(request.thread_id, request.decision)
+    except ApprovalThreadNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approval thread not found",
+        ) from exc
+    except ApprovalThreadConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approval thread already exists",
+        ) from exc
+    except ApprovalNotPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No pending approval for this thread",
+        ) from exc
+    except PlanningError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to execute the requested plan",
+        ) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The language model service is unavailable",
+        ) from exc
+    except ToolExecutionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Plan step execution failed",
+        ) from exc
+
+    return _planned_agent_response(result)
