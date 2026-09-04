@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.dependencies import get_llm_service
 from app.providers.base import LLMProviderError
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
+from app.services.graph_agent_service import GraphAgentService
 from app.services.llm_service import LLMService
-from app.services.tool_calling_service import ToolCallingService
 from app.tools.base import ToolExecutionError
 from app.tools.registry import create_default_tool_registry
 
@@ -12,10 +12,10 @@ from app.tools.registry import create_default_tool_registry
 router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
 
 
-def get_tool_calling_service(
+def get_graph_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
-) -> ToolCallingService:
-    return ToolCallingService(
+) -> GraphAgentService:
+    return GraphAgentService(
         llm_service=llm_service,
         registry=create_default_tool_registry(),
     )
@@ -24,7 +24,7 @@ def get_tool_calling_service(
 @router.post("/run", response_model=AgentRunResponse)
 async def run_agent(
     request: AgentRunRequest,
-    service: ToolCallingService = Depends(get_tool_calling_service),
+    service: GraphAgentService = Depends(get_graph_agent_service),
 ) -> AgentRunResponse:
     try:
         result = await service.run(request.message)
