@@ -1,3 +1,4 @@
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
@@ -11,7 +12,11 @@ from app.services.llm_service import LLMService
 from app.tools.registry import ToolRegistry
 
 
-def create_basic_agent_graph(llm_service: LLMService, registry: ToolRegistry):
+def create_basic_agent_graph(
+    llm_service: LLMService,
+    registry: ToolRegistry,
+    checkpointer: BaseCheckpointSaver | None = None,
+):
     tools = registry.definitions()
     builder = StateGraph(AgentState)
     builder.add_node(
@@ -31,4 +36,4 @@ def create_basic_agent_graph(llm_service: LLMService, registry: ToolRegistry):
     )
     builder.add_edge("tools", "final_llm")
     builder.add_edge("final_llm", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

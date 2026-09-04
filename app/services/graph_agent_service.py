@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+
 from app.graph.workflow import create_basic_agent_graph
 from app.providers.base import LLMProviderError
 from app.services.llm_service import LLMService
@@ -22,17 +24,37 @@ class GraphAgentResult:
 
 
 class GraphAgentService:
-    def __init__(self, llm_service: LLMService, registry: ToolRegistry) -> None:
-        self._graph = create_basic_agent_graph(llm_service, registry)
+    def __init__(
+        self,
+        llm_service: LLMService,
+        registry: ToolRegistry,
+        checkpointer: BaseCheckpointSaver | None = None,
+    ) -> None:
+        self._graph = create_basic_agent_graph(
+            llm_service,
+            registry,
+            checkpointer=checkpointer,
+        )
 
-    async def run(self, message: str) -> GraphAgentResult:
+    async def run(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+    ) -> GraphAgentResult:
+        config = (
+            None
+            if thread_id is None
+            else {"configurable": {"thread_id": thread_id}}
+        )
         result = await self._graph.ainvoke(
             {
                 "messages": [{"role": "user", "content": message}],
                 "llm_response": None,
                 "answer": None,
                 "executed_tools": [],
-            }
+            },
+            config=config,
         )
 
         answer = result.get("answer")
