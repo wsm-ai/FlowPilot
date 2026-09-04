@@ -11,3 +11,5 @@ class AgentState(TypedDict):
     executed_tools: list[dict[str, Any]]
     goal: NotRequired[str | None]
     plan: NotRequired[ExecutionPlan | None]
+    current_step_index: NotRequired[int]
+    route: NotRequired[str | None]

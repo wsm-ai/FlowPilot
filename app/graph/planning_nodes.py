@@ -17,3 +17,17 @@ def create_planner_node(planner_service: PlannerService) -> PlannerNode:
         return {"plan": plan}
 
     return planner_node
+
+
+def create_execute_marker_node() -> PlannerNode:
+    async def execute_marker_node(state: AgentState) -> dict[str, object]:
+        return {"route": "execute"}
+
+    return execute_marker_node
+
+
+def create_approval_marker_node() -> PlannerNode:
+    async def approval_marker_node(state: AgentState) -> dict[str, object]:
+        return {"route": "approval"}
+
+    return approval_marker_node
