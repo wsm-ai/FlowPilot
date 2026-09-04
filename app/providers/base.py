@@ -1,4 +1,6 @@
-from typing import Protocol
+from typing import Any, Protocol
+
+from app.providers.types import LLMResponse
 
 
 class LLMProviderError(Exception):
@@ -10,5 +12,10 @@ class LLMProvider(Protocol):
 
     model: str
 
-    async def chat(self, messages: list[dict[str, str]]) -> str:
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> LLMResponse:
         ...

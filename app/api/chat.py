@@ -1,17 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.core.config import Settings, get_settings
+from app.api.dependencies import get_llm_service
 from app.providers.base import LLMProviderError
-from app.providers.deepseek import DeepSeekProvider
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.llm_service import LLMService
 
 
 router = APIRouter(prefix="/api/v1", tags=["Chat"])
-
-
-def get_llm_service(settings: Settings = Depends(get_settings)) -> LLMService:
-    return LLMService(DeepSeekProvider(settings))
 
 
 @router.post("/chat", response_model=ChatResponse)
