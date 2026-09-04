@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from datetime import timedelta
 
 import pytest
@@ -19,6 +20,12 @@ def test_initialize_creates_database(tmp_path):
     _, database_path = create_repository(tmp_path)
 
     assert database_path.exists()
+
+    with sqlite3.connect(database_path) as database:
+        columns = {
+            row[1] for row in database.execute("PRAGMA table_info(agent_runs)")
+        }
+    assert "thread_id" in columns
 
 
 @pytest.mark.parametrize("mode", ["reactive", "planned"])
@@ -91,6 +98,72 @@ def test_update_saves_approval_required_status(tmp_path):
     )
 
     assert updated.status == "approval_required"
+
+
+@pytest.mark.parametrize("thread_id", ["planned-thread", None])
+def test_thread_id_round_trips_and_update_preserves_binding(tmp_path, thread_id):
+    repository, _ = create_repository(tmp_path)
+    record = create_agent_run_record("planned", "Review plan", thread_id=thread_id)
+    asyncio.run(repository.create(record))
+
+    updated = asyncio.run(repository.update(record.run_id, status="completed"))
+    stored = asyncio.run(repository.get(record.run_id))
+
+    assert updated.thread_id == thread_id
+    assert stored.thread_id == thread_id
+
+
+def test_rejected_status_round_trips(tmp_path):
+    repository, _ = create_repository(tmp_path)
+    record = create_agent_run_record("planned", "Review plan", "thread-rejected")
+    asyncio.run(repository.create(record))
+
+    updated = asyncio.run(repository.update(record.run_id, status="rejected"))
+
+    assert updated.status == "rejected"
+    assert asyncio.run(repository.get(record.run_id)).status == "rejected"
+
+
+def test_initialize_migrates_legacy_schema_without_losing_data(tmp_path):
+    database_path = tmp_path / "legacy.db"
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            """
+            CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                input_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result_json TEXT NULL,
+                error_type TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        database.execute(
+            """
+            INSERT INTO agent_runs VALUES (
+                'legacy-run', 'reactive', 'Hello', 'completed', NULL, NULL,
+                '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'
+            )
+            """
+        )
+
+    repository = SQLiteRunRepository(database_path)
+    asyncio.run(repository.initialize())
+    asyncio.run(repository.initialize())
+
+    with sqlite3.connect(database_path) as database:
+        columns = {
+            row[1] for row in database.execute("PRAGMA table_info(agent_runs)")
+        }
+    stored = asyncio.run(repository.get("legacy-run"))
+
+    assert "thread_id" in columns
+    assert stored is not None
+    assert stored.input_text == "Hello"
+    assert stored.thread_id is None
 
 
 def test_update_saves_failed_error_type_without_traceback(tmp_path):

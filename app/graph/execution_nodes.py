@@ -43,3 +43,44 @@ def create_plan_step_executor(registry: ToolRegistry) -> PlanStepExecutor:
         }
 
     return execute_step
+
+
+def create_approved_plan_step_executor(
+    registry: ToolRegistry,
+) -> PlanStepExecutor:
+    async def execute_approved_step(state: AgentState) -> dict[str, Any]:
+        plan = state.get("plan")
+        if plan is None:
+            raise PlanningError("Execution plan is required")
+
+        current_step_index = state.get("current_step_index", 0)
+        if current_step_index < 0 or current_step_index >= len(plan.steps):
+            raise PlanningError("Current step index is outside the execution plan")
+
+        current_step = plan.steps[current_step_index]
+        if not current_step.requires_approval:
+            raise PlanningError("Current plan step does not require approval")
+        if state.get("approval_decision") != "approve":
+            raise PlanningError("Approved execution requires an approve decision")
+        if state.get("pending_approval") is not None:
+            raise PlanningError("Pending approval must be cleared before execution")
+
+        result = await registry.execute(
+            current_step.action,
+            current_step.arguments,
+        )
+        step_results = list(state.get("step_results", []))
+        step_results.append(
+            {
+                "step_id": current_step.id,
+                "action": current_step.action,
+                "result": result,
+            }
+        )
+        return {
+            "step_results": step_results,
+            "current_step_index": current_step_index + 1,
+            "route": None,
+        }
+
+    return execute_approved_step

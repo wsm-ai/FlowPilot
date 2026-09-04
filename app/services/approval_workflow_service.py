@@ -1,0 +1,150 @@
+from dataclasses import dataclass, field
+from typing import Any, Literal
+from uuid import uuid4
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.types import Command
+
+from app.graph.approval_workflow import create_approval_graph
+from app.schemas.planning import ExecutionPlan
+from app.services.planner_service import PlannerService, PlanningError
+from app.tools.base import ToolExecutionError
+from app.tools.registry import ToolRegistry
+
+
+ApprovalWorkflowStatus = Literal[
+    "completed",
+    "approval_required",
+    "rejected",
+]
+
+
+class ApprovalThreadNotFoundError(Exception):
+    """Raised when an approval thread has no checkpoint state."""
+
+
+class ApprovalThreadConflictError(Exception):
+    """Raised when a new plan would reuse an existing approval thread."""
+
+
+class ApprovalNotPendingError(Exception):
+    """Raised when a thread is not currently waiting for approval."""
+
+
+@dataclass(slots=True)
+class ApprovalWorkflowResult:
+    thread_id: str
+    plan: ExecutionPlan
+    status: ApprovalWorkflowStatus
+    current_step_index: int
+    step_results: list[dict[str, Any]] = field(default_factory=list)
+    pending_approval: dict[str, Any] | None = None
+
+
+class ApprovalWorkflowService:
+    def __init__(
+        self,
+        planner_service: PlannerService,
+        registry: ToolRegistry,
+        checkpointer: BaseCheckpointSaver,
+    ) -> None:
+        self._planner_service = planner_service
+        self._graph = create_approval_graph(registry, checkpointer)
+
+    async def start(
+        self,
+        goal: str,
+        *,
+        thread_id: str | None = None,
+    ) -> ApprovalWorkflowResult:
+        resolved_thread_id = thread_id if thread_id is not None else str(uuid4())
+        config = self._config(resolved_thread_id)
+
+        existing_snapshot = await self._graph.aget_state(config)
+        if existing_snapshot.values:
+            raise ApprovalThreadConflictError("Approval thread already exists")
+
+        plan = await self._planner_service.create_plan(goal)
+        await self._graph.ainvoke(
+            {
+                "messages": [],
+                "llm_response": None,
+                "answer": None,
+                "executed_tools": [],
+                "goal": goal,
+                "plan": plan,
+                "current_step_index": 0,
+                "route": None,
+                "step_results": [],
+                "pending_approval": None,
+                "approval_decision": None,
+            },
+            config=config,
+        )
+        snapshot = await self._graph.aget_state(config)
+        return self._build_result(resolved_thread_id, snapshot)
+
+    async def resume(
+        self,
+        thread_id: str,
+        decision: Literal["approve", "reject"],
+    ) -> ApprovalWorkflowResult:
+        config = self._config(thread_id)
+        snapshot = await self._graph.aget_state(config)
+        if not snapshot.values:
+            raise ApprovalThreadNotFoundError("Approval thread not found")
+        if not isinstance(snapshot.values.get("pending_approval"), dict):
+            raise ApprovalNotPendingError("No pending approval for this thread")
+
+        await self._graph.ainvoke(
+            Command(resume={"decision": decision}),
+            config=config,
+        )
+        snapshot = await self._graph.aget_state(config)
+        return self._build_result(thread_id, snapshot)
+
+    @staticmethod
+    def _config(thread_id: str) -> dict[str, dict[str, str]]:
+        return {"configurable": {"thread_id": thread_id}}
+
+    @staticmethod
+    def _build_result(thread_id: str, snapshot: Any) -> ApprovalWorkflowResult:
+        values = snapshot.values
+        try:
+            plan = ExecutionPlan.model_validate(values.get("plan"))
+        except Exception as exc:
+            raise PlanningError("Approval workflow returned an invalid plan") from exc
+
+        current_step_index = values.get("current_step_index")
+        if not isinstance(current_step_index, int):
+            raise PlanningError("Approval workflow returned an invalid step index")
+
+        raw_step_results = values.get("step_results", [])
+        if not isinstance(raw_step_results, list) or not all(
+            isinstance(record, dict) for record in raw_step_results
+        ):
+            raise ToolExecutionError("Invalid plan step results")
+        step_results = [record.copy() for record in raw_step_results]
+
+        pending_approval = values.get("pending_approval")
+        graph_ended = not snapshot.next
+        if isinstance(pending_approval, dict):
+            status: ApprovalWorkflowStatus = "approval_required"
+            pending_result = pending_approval.copy()
+        elif values.get("approval_decision") == "reject" and graph_ended:
+            status = "rejected"
+            pending_result = None
+        elif current_step_index >= len(plan.steps) and graph_ended:
+            status = "completed"
+            pending_result = None
+        else:
+            raise PlanningError("Approval workflow ended in an unknown state")
+
+        return ApprovalWorkflowResult(
+            thread_id=thread_id,
+            plan=plan,
+            status=status,
+            current_step_index=current_step_index,
+            step_results=step_results,
+            pending_approval=pending_result,
+        )

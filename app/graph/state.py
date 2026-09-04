@@ -15,3 +15,5 @@ class AgentState(TypedDict):
     current_step_index: NotRequired[int]
     route: NotRequired[str | None]
     step_results: NotRequired[list[dict[str, Any]]]
+    pending_approval: NotRequired[dict[str, Any] | None]
+    approval_decision: NotRequired[str | None]
