@@ -1,8 +1,6 @@
 import asyncio
 from typing import Any
 
-import pytest
-
 from app.graph.workflow import create_basic_agent_graph
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.providers.types import LLMResponse, LLMToolCall
@@ -182,13 +180,76 @@ def test_reactive_agent_without_checkpointer_remains_compatible():
     ]
 
 
-def test_checkpointed_service_requires_thread_id(tmp_path):
+def test_checkpointed_service_without_thread_id_uses_stateless_graph(tmp_path):
     database_path = tmp_path / "memory.sqlite"
     provider = FakeProvider([LLMResponse(content="Answer")])
 
     async def scenario():
         async with async_checkpoint_saver(database_path) as saver:
-            await create_service(provider, saver).run("Hello")
+            return await create_service(provider, saver).run("Hello")
 
-    with pytest.raises(ValueError):
-        asyncio.run(scenario())
+    result = asyncio.run(scenario())
+
+    assert result.answer == "Answer"
+    assert provider.requests[0]["messages"] == [
+        {"role": "user", "content": "Hello"}
+    ]
+
+
+def test_same_service_uses_checkpointed_graph_only_when_thread_id_is_present(
+    tmp_path,
+):
+    database_path = tmp_path / "memory.sqlite"
+    provider = FakeProvider(
+        [
+            LLMResponse(content="Anonymous answer"),
+            LLMResponse(content="Thread answer one"),
+            LLMResponse(content="Thread answer two"),
+        ]
+    )
+
+    async def scenario():
+        async with async_checkpoint_saver(database_path) as saver:
+            service = create_service(provider, saver)
+            anonymous = await service.run("Anonymous message")
+            await service.run("Thread message one", thread_id="thread-a")
+            threaded = await service.run(
+                "Thread message two",
+                thread_id="thread-a",
+            )
+            return anonymous, threaded
+
+    anonymous, threaded = asyncio.run(scenario())
+
+    assert anonymous.answer == "Anonymous answer"
+    assert threaded.answer == "Thread answer two"
+    assert provider.requests[2]["messages"] == [
+        {"role": "user", "content": "Thread message one"},
+        {"role": "assistant", "content": "Thread answer one"},
+        {"role": "user", "content": "Thread message two"},
+    ]
+
+
+def test_requests_without_thread_id_do_not_share_memory(tmp_path):
+    database_path = tmp_path / "memory.sqlite"
+    provider = FakeProvider(
+        [
+            LLMResponse(content="Answer A"),
+            LLMResponse(content="Answer B"),
+        ]
+    )
+
+    async def scenario():
+        async with async_checkpoint_saver(database_path) as saver:
+            service = create_service(provider, saver)
+            await service.run("Message A")
+            await service.run("Message B")
+
+    asyncio.run(scenario())
+
+    assert provider.requests[0]["messages"] == [
+        {"role": "user", "content": "Message A"}
+    ]
+    assert provider.requests[1]["messages"] == [
+        {"role": "user", "content": "Message B"}
+    ]

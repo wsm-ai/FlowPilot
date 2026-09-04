@@ -33,7 +33,15 @@ class GraphAgentService:
         self._graph = create_basic_agent_graph(
             llm_service,
             registry,
-            checkpointer=checkpointer,
+        )
+        self._checkpointed_graph = (
+            None
+            if checkpointer is None
+            else create_basic_agent_graph(
+                llm_service,
+                registry,
+                checkpointer=checkpointer,
+            )
         )
 
     async def run(
@@ -42,12 +50,17 @@ class GraphAgentService:
         *,
         thread_id: str | None = None,
     ) -> GraphAgentResult:
-        config = (
-            None
-            if thread_id is None
-            else {"configurable": {"thread_id": thread_id}}
-        )
-        result = await self._graph.ainvoke(
+        if thread_id is None:
+            graph = self._graph
+            config = None
+        else:
+            if self._checkpointed_graph is None:
+                graph = self._graph
+            else:
+                graph = self._checkpointed_graph
+            config = {"configurable": {"thread_id": thread_id}}
+
+        result = await graph.ainvoke(
             {
                 "messages": [{"role": "user", "content": message}],
                 "llm_response": None,
