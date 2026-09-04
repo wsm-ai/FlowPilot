@@ -74,7 +74,13 @@ def test_direct_answer_routes_to_end_without_executing_tools():
     assert result["answer"] == "An AI agent can act toward a goal."
     assert result["llm_response"] is expected_response
     assert result["executed_tools"] == []
-    assert result["messages"] == state["messages"]
+    assert result["messages"] == [
+        *state["messages"],
+        {
+            "role": "assistant",
+            "content": "An AI agent can act toward a goal.",
+        },
+    ]
 
 
 def test_tool_call_routes_to_tool_node_and_updates_state():
