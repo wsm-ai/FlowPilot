@@ -1,4 +1,8 @@
+from typing import Any
+
 from app.providers.base import LLMProvider
+from app.providers.base import LLMProviderError
+from app.providers.types import LLMResponse
 
 
 class LLMService:
@@ -10,6 +14,22 @@ class LLMService:
         return self._provider.model
 
     async def chat(self, message: str) -> str:
-        return await self._provider.chat(
+        response = await self._provider.complete(
             messages=[{"role": "user", "content": message}]
+        )
+        if not response.content:
+            raise LLMProviderError(
+                "The language model did not return content for a chat request"
+            )
+        return response.content
+
+    async def choose_tools(
+        self,
+        message: str,
+        tools: list[dict[str, Any]],
+    ) -> LLMResponse:
+        return await self._provider.complete(
+            messages=[{"role": "user", "content": message}],
+            tools=tools,
+            tool_choice="auto",
         )
