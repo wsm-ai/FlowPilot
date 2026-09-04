@@ -1,7 +1,6 @@
 from typing import Any
 
-from app.providers.base import LLMProvider
-from app.providers.base import LLMProviderError
+from app.providers.base import LLMProvider, LLMProviderError
 from app.providers.types import LLMResponse
 
 
@@ -13,8 +12,20 @@ class LLMService:
     def model(self) -> str:
         return self._provider.model
 
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> LLMResponse:
+        return await self._provider.complete(
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
     async def chat(self, message: str) -> str:
-        response = await self._provider.complete(
+        response = await self.complete(
             messages=[{"role": "user", "content": message}]
         )
         if not response.content:
@@ -28,7 +39,7 @@ class LLMService:
         message: str,
         tools: list[dict[str, Any]],
     ) -> LLMResponse:
-        return await self._provider.complete(
+        return await self.complete(
             messages=[{"role": "user", "content": message}],
             tools=tools,
             tool_choice="auto",
