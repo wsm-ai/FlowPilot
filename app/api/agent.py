@@ -64,7 +64,10 @@ def get_planned_agent_service(
     registry: ToolRegistry = Depends(get_tool_registry),
 ) -> PlannedAgentService:
     return PlannedAgentService(
-        planner_service=PlannerService(llm_service),
+        planner_service=PlannerService(
+            llm_service,
+            tool_definitions=registry.definitions(),
+        ),
         registry=registry,
     )
 
@@ -75,7 +78,10 @@ def get_approval_workflow_service(
     registry: ToolRegistry = Depends(get_tool_registry),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
-        planner_service=PlannerService(llm_service),
+        planner_service=PlannerService(
+            llm_service,
+            tool_definitions=registry.definitions(),
+        ),
         registry=registry,
         checkpointer=checkpointer,
     )
