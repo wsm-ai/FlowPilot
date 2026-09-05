@@ -5,6 +5,7 @@ from app.api.dependencies import (
     get_checkpointer,
     get_llm_service,
     get_run_repository,
+    get_tool_registry,
 )
 from app.persistence.repository import PersistenceError, RunRepository
 from app.providers.base import LLMProviderError
@@ -33,7 +34,7 @@ from app.services.persistent_approval_workflow_service import (
     PersistentApprovalWorkflowService,
 )
 from app.tools.base import ToolExecutionError
-from app.tools.registry import create_default_tool_registry
+from app.tools.registry import ToolRegistry
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
@@ -42,10 +43,11 @@ router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
 def get_graph_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
     checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
+    registry: ToolRegistry = Depends(get_tool_registry),
 ) -> GraphAgentService:
     return GraphAgentService(
         llm_service=llm_service,
-        registry=create_default_tool_registry(),
+        registry=registry,
         checkpointer=checkpointer,
     )
 
@@ -59,20 +61,22 @@ def get_persistent_agent_service(
 
 def get_planned_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
+    registry: ToolRegistry = Depends(get_tool_registry),
 ) -> PlannedAgentService:
     return PlannedAgentService(
         planner_service=PlannerService(llm_service),
-        registry=create_default_tool_registry(),
+        registry=registry,
     )
 
 
 def get_approval_workflow_service(
     llm_service: LLMService = Depends(get_llm_service),
     checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
+    registry: ToolRegistry = Depends(get_tool_registry),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
         planner_service=PlannerService(llm_service),
-        registry=create_default_tool_registry(),
+        registry=registry,
         checkpointer=checkpointer,
     )
 

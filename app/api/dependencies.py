@@ -4,7 +4,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from app.core.config import Settings, get_settings
 from app.persistence.repository import RunRepository
 from app.providers.deepseek import DeepSeekProvider
+from app.retrieval.base import Retriever
 from app.services.llm_service import LLMService
+from app.tools.knowledge_base import KnowledgeBaseTool
+from app.tools.registry import ToolRegistry, create_default_tool_registry
 
 
 def get_llm_service(settings: Settings = Depends(get_settings)) -> LLMService:
@@ -17,3 +20,20 @@ def get_run_repository(request: Request) -> RunRepository:
 
 def get_checkpointer(request: Request) -> BaseCheckpointSaver:
     return request.app.state.checkpointer
+
+
+def get_retriever(request: Request) -> Retriever:
+    try:
+        return request.app.state.retriever
+    except AttributeError as exc:
+        raise RuntimeError(
+            "Knowledge base retriever is not initialized"
+        ) from exc
+
+
+def get_tool_registry(
+    retriever: Retriever = Depends(get_retriever),
+) -> ToolRegistry:
+    registry = create_default_tool_registry()
+    registry.register(KnowledgeBaseTool(retriever))
+    return registry
