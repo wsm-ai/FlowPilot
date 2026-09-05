@@ -1,9 +1,8 @@
 import asyncio
 import json
 
-import pytest
-
 from app.grounding.models import Citation, GroundedAnswer
+from app.providers.base import LLMProviderError
 from app.providers.types import LLMResponse
 from app.retrieval.models import KnowledgeChunk, RetrievalQuery, RetrievalResult
 from app.schemas.planning import ExecutionPlan, PlanStep
@@ -121,6 +120,8 @@ def test_completed_plan_hands_final_tool_evidence_to_synthesis_once():
     )
 
     assert result.status == "completed"
+    assert result.grounding_status == "completed"
+    assert result.grounding_error_type is None
     assert result.grounded_answer.answer == "Grounded final answer"
     assert len(synthesis.calls) == 1
     assert synthesis.calls[0]["goal"] == goal
@@ -140,6 +141,7 @@ def test_planned_service_without_synthesizer_remains_backward_compatible():
     )
     assert result.status == "completed"
     assert result.grounded_answer is None
+    assert result.grounding_status == "not_attempted"
     assert retriever.call_count == 1
 
 
@@ -158,7 +160,7 @@ def test_real_grounded_service_maps_citation_from_executed_step_results():
     assert retriever.call_count == 1
 
 
-def test_synthesis_failure_propagates_without_rerunning_execution():
+def test_synthesis_failure_is_recorded_without_rerunning_execution():
     goal = "Find login guidance"
     retriever = FakeRetriever()
     synthesis = FakeGroundedAnswerService(GroundedAnswerError("synthesis failed"))
@@ -168,8 +170,29 @@ def test_synthesis_failure_propagates_without_rerunning_execution():
         synthesis,
     )
 
-    with pytest.raises(GroundedAnswerError, match="synthesis failed"):
-        asyncio.run(service.run(goal))
+    result = asyncio.run(service.run(goal))
 
+    assert result.status == "completed"
+    assert result.grounding_status == "failed"
+    assert result.grounding_error_type == "GroundedAnswerError"
+    assert result.grounded_answer is None
     assert len(synthesis.calls) == 1
+    assert retriever.call_count == 1
+
+
+def test_provider_failure_is_recorded_as_answer_failure():
+    goal = "Find login guidance"
+    retriever = FakeRetriever()
+    synthesis = FakeGroundedAnswerService(LLMProviderError("provider down"))
+    result = asyncio.run(
+        PlannedAgentService(
+            FakePlanner(retrieval_plan(goal)),
+            build_registry(retriever),
+            synthesis,
+        ).run(goal)
+    )
+    assert result.status == "completed"
+    assert result.grounding_status == "failed"
+    assert result.grounding_error_type == "LLMProviderError"
+    assert result.grounded_answer is None
     assert retriever.call_count == 1

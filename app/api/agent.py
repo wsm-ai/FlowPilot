@@ -14,6 +14,7 @@ from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolRes
 from app.schemas.planned_agent import (
     ApprovalResumeRequest,
     CitationResponse,
+    GroundedAnswerRetryRequest,
     PlannedAgentRunRequest,
     PlannedAgentRunResponse,
 )
@@ -33,6 +34,8 @@ from app.services.persistent_approval_workflow_service import (
     ApprovalRunNotFoundError,
     ApprovalRunNotPendingError,
     ApprovalRunThreadMismatchError,
+    GroundedAnswerRetryNotAllowedError,
+    GroundedAnswerRetryStateError,
     PersistentApprovalWorkflowResult,
     PersistentApprovalWorkflowService,
 )
@@ -104,7 +107,11 @@ def get_persistent_approval_workflow_service(
 def _planned_agent_response(
     result: PersistentApprovalWorkflowResult,
 ) -> PlannedAgentRunResponse:
-    grounded_answer = result.grounded_answer
+    grounded_answer = (
+        result.grounded_answer
+        if result.grounding_status == "completed"
+        else None
+    )
     return PlannedAgentRunResponse(
         run_id=result.run_id,
         thread_id=result.thread_id,
@@ -122,6 +129,7 @@ def _planned_agent_response(
                 for citation in grounded_answer.citations
             ]
         ),
+        answer_status=result.grounding_status,
     )
 
 
@@ -277,6 +285,47 @@ async def resume_planned_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Plan step execution failed",
+        ) from exc
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Agent persistence failed",
+        ) from exc
+
+    return _planned_agent_response(result)
+
+
+@router.post("/answer/retry", response_model=PlannedAgentRunResponse)
+async def retry_grounded_answer(
+    request: GroundedAnswerRetryRequest,
+    service: PersistentApprovalWorkflowService = Depends(
+        get_persistent_approval_workflow_service
+    ),
+) -> PlannedAgentRunResponse:
+    try:
+        result = await service.retry_grounded_answer(
+            request.run_id,
+            request.thread_id,
+        )
+    except ApprovalRunNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approval run not found",
+        ) from exc
+    except ApprovalRunThreadMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Run does not match approval thread",
+        ) from exc
+    except GroundedAnswerRetryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Grounded answer retry is not allowed",
+        ) from exc
+    except GroundedAnswerRetryStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grounded answer retry state is invalid",
         ) from exc
     except PersistenceError as exc:
         raise HTTPException(

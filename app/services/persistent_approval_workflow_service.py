@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-from app.grounding.evidence import EvidenceExtractionError
+from app.grounding.lifecycle import GroundingSynthesisStatus
 from app.grounding.models import GroundedAnswer
 from app.persistence.models import create_agent_run_record
 from app.persistence.repository import RunRepository
@@ -17,7 +17,6 @@ from app.services.approval_workflow_service import (
     ApprovalWorkflowStatus,
 )
 from app.services.planner_service import PlanningError
-from app.services.grounded_answer_service import GroundedAnswerError
 from app.tools.base import ToolExecutionError
 
 
@@ -33,6 +32,14 @@ class ApprovalRunNotPendingError(Exception):
     """Raised when an approval run is not awaiting a decision."""
 
 
+class GroundedAnswerRetryNotAllowedError(Exception):
+    """Raised when a run is not eligible for grounded answer retry."""
+
+
+class GroundedAnswerRetryStateError(Exception):
+    """Raised when persisted data cannot safely support answer retry."""
+
+
 @dataclass(slots=True)
 class PersistentApprovalWorkflowResult:
     run_id: str
@@ -43,6 +50,8 @@ class PersistentApprovalWorkflowResult:
     step_results: list[dict[str, Any]] = field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
     grounded_answer: GroundedAnswer | None = None
+    grounding_status: GroundingSynthesisStatus = "not_attempted"
+    grounding_error_type: str | None = None
 
 
 WorkflowFailure = (
@@ -52,8 +61,6 @@ WorkflowFailure = (
     ApprovalThreadConflictError,
     ApprovalNotPendingError,
     ApprovalThreadNotFoundError,
-    GroundedAnswerError,
-    EvidenceExtractionError,
 )
 
 
@@ -137,10 +144,77 @@ class PersistentApprovalWorkflowService:
         )
         return self._to_result(run_id, workflow_result)
 
+    async def retry_grounded_answer(
+        self,
+        run_id: str,
+        thread_id: str,
+    ) -> PersistentApprovalWorkflowResult:
+        record = await self._run_repository.get(run_id)
+        if record is None:
+            raise ApprovalRunNotFoundError("Approval run not found")
+        if record.mode != "planned" or record.thread_id != thread_id:
+            raise ApprovalRunThreadMismatchError(
+                "Run does not match approval thread"
+            )
+        if record.status != "completed":
+            raise GroundedAnswerRetryNotAllowedError(
+                "Grounded answer retry is not allowed"
+            )
+
+        stored = record.result
+        if not isinstance(stored, dict):
+            raise GroundedAnswerRetryStateError(
+                "Grounded answer retry state is invalid"
+            )
+        if stored.get("grounding_status") != "failed":
+            raise GroundedAnswerRetryNotAllowedError(
+                "Grounded answer retry is not allowed"
+            )
+        try:
+            plan = ExecutionPlan.model_validate(stored.get("plan"))
+        except Exception as exc:
+            raise GroundedAnswerRetryStateError(
+                "Grounded answer retry state is invalid"
+            ) from exc
+        step_results = stored.get("step_results")
+        current_step_index = stored.get("current_step_index")
+        if (
+            not isinstance(step_results, list)
+            or not all(isinstance(item, dict) for item in step_results)
+            or not isinstance(current_step_index, int)
+        ):
+            raise GroundedAnswerRetryStateError(
+                "Grounded answer retry state is invalid"
+            )
+
+        outcome = await self._workflow_service.retry_grounded_answer(
+            goal=record.input_text,
+            plan=plan,
+            step_results=step_results,
+        )
+        workflow_result = ApprovalWorkflowResult(
+            thread_id=thread_id,
+            plan=plan,
+            status="completed",
+            current_step_index=current_step_index,
+            step_results=[item.copy() for item in step_results],
+            pending_approval=None,
+            grounded_answer=outcome.grounded_answer,
+            grounding_status=outcome.status,
+            grounding_error_type=outcome.error_type,
+        )
+        await self._run_repository.update(
+            run_id,
+            status="completed",
+            result=self._safe_result(workflow_result),
+        )
+        return self._to_result(run_id, workflow_result)
+
     @staticmethod
     def _safe_result(result: ApprovalWorkflowResult) -> dict[str, Any]:
         return {
             "thread_id": result.thread_id,
+            "plan": result.plan.model_dump(mode="json"),
             "current_step_index": result.current_step_index,
             "step_results": result.step_results,
             "pending_approval": result.pending_approval,
@@ -149,6 +223,8 @@ class PersistentApprovalWorkflowService:
                 if result.grounded_answer is None
                 else result.grounded_answer.model_dump(mode="json")
             ),
+            "grounding_status": result.grounding_status,
+            "grounding_error_type": result.grounding_error_type,
         }
 
     @staticmethod
@@ -165,4 +241,6 @@ class PersistentApprovalWorkflowService:
             step_results=result.step_results,
             pending_approval=result.pending_approval,
             grounded_answer=result.grounded_answer,
+            grounding_status=result.grounding_status,
+            grounding_error_type=result.grounding_error_type,
         )

@@ -3,6 +3,7 @@ from typing import Any, Literal
 
 from app.graph.execution_workflow import create_plan_execution_graph
 from app.grounding.models import GroundedAnswer
+from app.grounding.lifecycle import GroundingSynthesisStatus, attempt_grounded_synthesis
 from app.schemas.planning import ExecutionPlan
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.planner_service import PlannerService, PlanningError
@@ -20,6 +21,8 @@ class PlannedAgentResult:
     status: PlannedAgentStatus
     step_results: list[dict[str, Any]] = field(default_factory=list)
     grounded_answer: GroundedAnswer | None = None
+    grounding_status: GroundingSynthesisStatus = "not_attempted"
+    grounding_error_type: str | None = None
 
 
 class PlannedAgentService:
@@ -68,13 +71,15 @@ class PlannedAgentService:
             step_results=self._convert_step_results(result.get("step_results", [])),
         )
         if status == "completed" and self._grounded_answer_service is not None:
-            planned_result.grounded_answer = (
-                await self._grounded_answer_service.synthesize(
-                    goal=goal,
-                    plan=planned_result.plan,
-                    step_results=planned_result.step_results,
-                )
+            outcome = await attempt_grounded_synthesis(
+                self._grounded_answer_service,
+                goal=goal,
+                plan=planned_result.plan,
+                step_results=planned_result.step_results,
             )
+            planned_result.grounded_answer = outcome.grounded_answer
+            planned_result.grounding_status = outcome.status
+            planned_result.grounding_error_type = outcome.error_type
         return planned_result
 
     @staticmethod

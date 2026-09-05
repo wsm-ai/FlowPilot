@@ -101,6 +101,7 @@ def test_immediately_completed_workflow_synthesizes_once(tmp_path):
 
     result, synthesis = asyncio.run(scenario())
     assert result.status == "completed"
+    assert result.grounding_status == "completed"
     assert result.grounded_answer.answer == "Grounded final answer"
     assert len(synthesis.calls) == 1
     assert synthesis.calls[0]["goal"] == "Original workflow goal"
@@ -124,6 +125,7 @@ def test_pending_or_rejected_workflow_does_not_synthesize(tmp_path, decision):
     result, synthesis, tool = asyncio.run(scenario())
     assert result.status == ("approval_required" if decision is None else "rejected")
     assert result.grounded_answer is None
+    assert result.grounding_status == "not_attempted"
     assert synthesis.calls == []
     assert tool.call_count == 0
 
@@ -143,6 +145,7 @@ def test_final_approval_completion_synthesizes_once_using_resumed_state_goal(tmp
     started, resumed, synthesis, tool = asyncio.run(scenario())
     assert started.status == "approval_required"
     assert started.grounded_answer is None
+    assert started.grounding_status == "not_attempted"
     assert resumed.status == "completed"
     assert resumed.grounded_answer.answer == "Grounded final answer"
     assert len(synthesis.calls) == 1
@@ -151,7 +154,7 @@ def test_final_approval_completion_synthesizes_once_using_resumed_state_goal(tmp
     assert tool.call_count == 1
 
 
-def test_synthesis_failure_after_approval_does_not_execute_tool_twice(tmp_path):
+def test_synthesis_failure_after_approval_keeps_terminal_checkpoint_and_tool_once(tmp_path):
     async def scenario():
         registry, tool = registry_with_spy()
         synthesis = FakeGroundedAnswerService(
@@ -162,10 +165,17 @@ def test_synthesis_failure_after_approval_does_not_execute_tool_twice(tmp_path):
                 FakePlanner(approval_plan()), registry, saver, synthesis
             )
             await service.start("Create an issue", thread_id="thread-failure")
-            with pytest.raises(GroundedAnswerError, match="synthesis failed"):
-                await service.resume("thread-failure", "approve")
-        return synthesis, tool
+            result = await service.resume("thread-failure", "approve")
+            snapshot = await service._graph.aget_state(
+                {"configurable": {"thread_id": "thread-failure"}}
+            )
+        return result, snapshot, synthesis, tool
 
-    synthesis, tool = asyncio.run(scenario())
+    result, snapshot, synthesis, tool = asyncio.run(scenario())
+    assert result.status == "completed"
+    assert result.grounding_status == "failed"
+    assert result.grounding_error_type == "GroundedAnswerError"
+    assert result.grounded_answer is None
+    assert snapshot.next == ()
     assert len(synthesis.calls) == 1
     assert tool.call_count == 1

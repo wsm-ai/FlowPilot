@@ -126,9 +126,13 @@ def test_real_grounded_answer_round_trips_through_json_persistence(tmp_path):
     result, record = asyncio.run(scenario())
 
     assert result.status == "completed"
+    assert result.grounding_status == "completed"
     assert result.grounded_answer.answer == "Check enterprise SSO configuration."
     assert result.grounded_answer.citations[0].chunk_id == "CH-1"
     persisted = record.result["grounded_answer"]
+    assert ExecutionPlan.model_validate(record.result["plan"]) == result.plan
+    assert record.result["grounding_status"] == "completed"
+    assert record.result["grounding_error_type"] is None
     assert persisted == result.grounded_answer.model_dump(mode="json")
     assert persisted["citations"][0] == {
         "citation_id": "E1",
@@ -164,8 +168,11 @@ def test_pending_and_approved_resume_update_same_run(tmp_path):
     pending, pending_record, completed, completed_record = asyncio.run(scenario())
 
     assert pending.grounded_answer is None
+    assert pending.grounding_status == "not_attempted"
     assert pending_record.result["grounded_answer"] is None
+    assert pending_record.result["grounding_status"] == "not_attempted"
     assert completed.run_id == pending.run_id
     assert completed.status == "completed"
+    assert completed.grounding_status == "completed"
     assert completed.grounded_answer.answer == "Approved answer"
     assert completed_record.result["grounded_answer"]["answer"] == "Approved answer"
