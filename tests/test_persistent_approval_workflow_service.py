@@ -122,6 +122,8 @@ def test_pending_run_approve_preserves_ids_and_completes(tmp_path):
     assert started.status == "approval_required"
     assert before.status == "approval_required"
     assert before.thread_id == started.thread_id
+    assert started.grounded_answer is None
+    assert before.result["grounded_answer"] is None
     assert tool.call_count == 1
     assert resumed.run_id == started.run_id
     assert resumed.thread_id == started.thread_id
@@ -151,6 +153,8 @@ def test_reject_is_persisted_as_business_terminal_state(tmp_path):
 
     assert result.status == "rejected"
     assert record.status == "rejected"
+    assert result.grounded_answer is None
+    assert record.result["grounded_answer"] is None
     assert tool.call_count == 0
 
 

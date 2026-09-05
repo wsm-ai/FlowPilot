@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.agent import get_persistent_approval_workflow_service
+from app.grounding.evidence import EvidenceExtractionError
+from app.grounding.models import Citation, GroundedAnswer
 from app.main import app
 from app.persistence.repository import PersistenceError
 from app.providers.base import LLMProviderError
@@ -15,9 +17,12 @@ from app.services.persistent_approval_workflow_service import (
     ApprovalRunNotFoundError,
     ApprovalRunNotPendingError,
     ApprovalRunThreadMismatchError,
+    GroundedAnswerRetryNotAllowedError,
+    GroundedAnswerRetryStateError,
     PersistentApprovalWorkflowResult,
 )
 from app.services.planner_service import PlanningError
+from app.services.grounded_answer_service import GroundedAnswerError
 from app.tools.base import ToolExecutionError
 
 
@@ -55,6 +60,19 @@ class FakePersistentApprovalWorkflowService:
                 }
             ],
             pending_approval=None,
+            grounded_answer=GroundedAnswer(
+                answer="Grounded feedback answer",
+                citations=[
+                    Citation(
+                        citation_id="E1",
+                        chunk_id="CH-1",
+                        document_id="DOC-1",
+                        source="support-handbook",
+                        title="Support Guide",
+                    )
+                ],
+            ),
+            grounding_status="completed",
         )
 
     async def resume(
@@ -68,6 +86,47 @@ class FakePersistentApprovalWorkflowService:
             current_step_index=1 if decision == "approve" else 0,
             step_results=[] if decision == "reject" else [{"step_id": 1}],
             pending_approval=None,
+            grounded_answer=(
+                GroundedAnswer(
+                    answer="Approved grounded answer",
+                    citations=[
+                        Citation(
+                            citation_id="E1",
+                            chunk_id="CH-1",
+                            document_id="DOC-1",
+                            source="support-handbook",
+                        )
+                    ],
+                )
+                if decision == "approve"
+                else None
+            ),
+            grounding_status="completed" if decision == "approve" else "not_attempted",
+        )
+
+    async def retry_grounded_answer(
+        self, run_id: str, thread_id: str
+    ) -> PersistentApprovalWorkflowResult:
+        return PersistentApprovalWorkflowResult(
+            run_id=run_id,
+            thread_id=thread_id,
+            plan=PLAN,
+            status="completed",
+            current_step_index=1,
+            step_results=[{"step_id": 1}],
+            pending_approval=None,
+            grounded_answer=GroundedAnswer(
+                answer="Retried grounded answer",
+                citations=[
+                    Citation(
+                        citation_id="E1",
+                        chunk_id="CH-1",
+                        document_id="DOC-1",
+                        source="support-handbook",
+                    )
+                ],
+            ),
+            grounding_status="completed",
         )
 
 
@@ -99,6 +158,68 @@ def test_plan_run_returns_structured_result(client: TestClient):
         {"id": "FB-003"},
     ]
     assert body["pending_approval"] is None
+    assert body["answer"] == "Grounded feedback answer"
+    assert body["answer_status"] == "completed"
+    assert body["citations"] == [
+        {
+            "citation_id": "E1",
+            "chunk_id": "CH-1",
+            "document_id": "DOC-1",
+            "source": "support-handbook",
+            "title": "Support Guide",
+        }
+    ]
+
+
+def test_plan_run_pending_approval_has_no_grounded_answer(client: TestClient):
+    pending_plan = ExecutionPlan(
+        goal="Create issue",
+        steps=[
+            PlanStep(
+                id=1,
+                description="Create issue",
+                action="create_test_issue",
+                arguments={"title": "Login issue"},
+                requires_approval=True,
+            )
+        ],
+    )
+
+    class PendingService:
+        async def start(self, goal: str, *, thread_id=None):
+            return PersistentApprovalWorkflowResult(
+                run_id="run-pending",
+                thread_id="approval-thread",
+                plan=pending_plan,
+                status="approval_required",
+                current_step_index=0,
+                step_results=[],
+                pending_approval={
+                    "type": "plan_step_approval",
+                    "step_id": 1,
+                    "description": "Create issue",
+                    "action": "create_test_issue",
+                    "arguments": {"title": "Login issue"},
+                },
+                grounded_answer=None,
+            )
+
+    app.dependency_overrides[get_persistent_approval_workflow_service] = PendingService
+
+    response = client.post(
+        "/api/v1/agent/plan-run",
+        json={"goal": "Create issue", "thread_id": "approval-thread"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == "run-pending"
+    assert body["thread_id"] == "approval-thread"
+    assert body["status"] == "approval_required"
+    assert body["answer"] is None
+    assert body["answer_status"] == "not_attempted"
+    assert body["citations"] == []
+    assert body["pending_approval"] is not None
 
 
 @pytest.mark.parametrize("goal", ["", "   "])
@@ -140,6 +261,16 @@ def test_plan_run_rejects_invalid_thread_id(client: TestClient, thread_id: str):
             PersistenceError("sensitive persistence error"),
             500,
             "Agent persistence failed",
+        ),
+        (
+            GroundedAnswerError("sensitive synthesis E999"),
+            502,
+            "Unable to generate grounded answer",
+        ),
+        (
+            EvidenceExtractionError("sensitive invalid evidence"),
+            500,
+            "Grounded answer evidence is invalid",
         ),
     ],
 )
@@ -198,6 +329,14 @@ def test_approval_resume_returns_unified_response(client: TestClient, decision: 
     assert body["thread_id"] == "approval-thread"
     assert body["status"] == ("completed" if decision == "approve" else "rejected")
     assert body["pending_approval"] is None
+    if decision == "approve":
+        assert body["answer_status"] == "completed"
+        assert body["answer"] == "Approved grounded answer"
+        assert body["citations"][0]["citation_id"] == "E1"
+    else:
+        assert body["answer_status"] == "not_attempted"
+        assert body["answer"] is None
+        assert body["citations"] == []
 
 
 @pytest.mark.parametrize(
@@ -217,6 +356,109 @@ def test_approval_resume_rejects_invalid_request(client: TestClient, payload):
     assert response.status_code == 422
 
 
+def test_grounded_answer_retry_returns_same_run_and_recovered_answer(client: TestClient):
+    response = client.post(
+        "/api/v1/agent/answer/retry",
+        json={"run_id": "run-123", "thread_id": "approval-thread"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == "run-123"
+    assert body["thread_id"] == "approval-thread"
+    assert body["status"] == "completed"
+    assert body["answer_status"] == "completed"
+    assert body["answer"] == "Retried grounded answer"
+    assert body["citations"][0]["citation_id"] == "E1"
+
+
+def test_grounded_answer_retry_failure_returns_completed_run_without_answer(
+    client: TestClient,
+):
+    class FailedRetryService:
+        async def retry_grounded_answer(self, run_id: str, thread_id: str):
+            return PersistentApprovalWorkflowResult(
+                run_id=run_id,
+                thread_id=thread_id,
+                plan=PLAN,
+                status="completed",
+                current_step_index=1,
+                grounding_status="failed",
+                grounding_error_type="GroundedAnswerError",
+            )
+
+    app.dependency_overrides[
+        get_persistent_approval_workflow_service
+    ] = FailedRetryService
+    response = client.post(
+        "/api/v1/agent/answer/retry",
+        json={"run_id": "run-123", "thread_id": "approval-thread"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["answer_status"] == "failed"
+    assert response.json()["answer"] is None
+    assert response.json()["citations"] == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "detail"),
+    [
+        (ApprovalRunNotFoundError("sensitive"), 404, "Approval run not found"),
+        (
+            ApprovalRunThreadMismatchError("sensitive thread"),
+            409,
+            "Run does not match approval thread",
+        ),
+        (
+            GroundedAnswerRetryNotAllowedError("sensitive state"),
+            409,
+            "Grounded answer retry is not allowed",
+        ),
+        (
+            GroundedAnswerRetryStateError("sensitive payload"),
+            500,
+            "Grounded answer retry state is invalid",
+        ),
+        (PersistenceError("sensitive db"), 500, "Agent persistence failed"),
+    ],
+)
+def test_grounded_answer_retry_maps_errors_without_leaking_details(
+    client: TestClient,
+    error,
+    status_code,
+    detail,
+):
+    class FailingRetryService:
+        async def retry_grounded_answer(self, run_id: str, thread_id: str):
+            raise error
+
+    app.dependency_overrides[
+        get_persistent_approval_workflow_service
+    ] = FailingRetryService
+    response = client.post(
+        "/api/v1/agent/answer/retry",
+        json={"run_id": "run-123", "thread_id": "approval-thread"},
+    )
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+    assert str(error) not in response.text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"run_id": "", "thread_id": "thread-a"},
+        {"run_id": "   ", "thread_id": "thread-a"},
+        {"run_id": "run-1", "thread_id": ""},
+        {"run_id": "run-1", "thread_id": "   "},
+        {"run_id": "x" * 201, "thread_id": "thread-a"},
+    ],
+)
+def test_grounded_answer_retry_rejects_invalid_request(client: TestClient, payload):
+    response = client.post("/api/v1/agent/answer/retry", json=payload)
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
     ("error", "status_code", "detail"),
     [
@@ -230,6 +472,8 @@ def test_approval_resume_rejects_invalid_request(client: TestClient, payload):
         (ToolExecutionError("sensitive tool"), 500, "Plan step execution failed"),
         (LLMProviderError("sensitive llm"), 502, "The language model service is unavailable"),
         (PersistenceError("sensitive persistence"), 500, "Agent persistence failed"),
+        (GroundedAnswerError("sensitive E999"), 502, "Unable to generate grounded answer"),
+        (EvidenceExtractionError("sensitive evidence"), 500, "Grounded answer evidence is invalid"),
     ],
 )
 def test_approval_resume_maps_errors_without_leaking_details(

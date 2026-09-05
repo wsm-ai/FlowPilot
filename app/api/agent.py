@@ -1,19 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from app.grounding.evidence import EvidenceExtractionError
 from app.api.dependencies import (
     get_checkpointer,
     get_llm_service,
     get_run_repository,
+    get_tool_registry,
 )
 from app.persistence.repository import PersistenceError, RunRepository
 from app.providers.base import LLMProviderError
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
 from app.schemas.planned_agent import (
     ApprovalResumeRequest,
+    CitationResponse,
+    GroundedAnswerRetryRequest,
     PlannedAgentRunRequest,
     PlannedAgentRunResponse,
 )
+from app.services.grounded_answer_service import GroundedAnswerError, GroundedAnswerService
 from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalThreadConflictError,
@@ -29,11 +34,13 @@ from app.services.persistent_approval_workflow_service import (
     ApprovalRunNotFoundError,
     ApprovalRunNotPendingError,
     ApprovalRunThreadMismatchError,
+    GroundedAnswerRetryNotAllowedError,
+    GroundedAnswerRetryStateError,
     PersistentApprovalWorkflowResult,
     PersistentApprovalWorkflowService,
 )
 from app.tools.base import ToolExecutionError
-from app.tools.registry import create_default_tool_registry
+from app.tools.registry import ToolRegistry
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
@@ -42,10 +49,11 @@ router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
 def get_graph_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
     checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
+    registry: ToolRegistry = Depends(get_tool_registry),
 ) -> GraphAgentService:
     return GraphAgentService(
         llm_service=llm_service,
-        registry=create_default_tool_registry(),
+        registry=registry,
         checkpointer=checkpointer,
     )
 
@@ -59,21 +67,31 @@ def get_persistent_agent_service(
 
 def get_planned_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
+    registry: ToolRegistry = Depends(get_tool_registry),
 ) -> PlannedAgentService:
     return PlannedAgentService(
-        planner_service=PlannerService(llm_service),
-        registry=create_default_tool_registry(),
+        planner_service=PlannerService(
+            llm_service,
+            tool_definitions=registry.definitions(),
+        ),
+        registry=registry,
+        grounded_answer_service=GroundedAnswerService(llm_service),
     )
 
 
 def get_approval_workflow_service(
     llm_service: LLMService = Depends(get_llm_service),
     checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
+    registry: ToolRegistry = Depends(get_tool_registry),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
-        planner_service=PlannerService(llm_service),
-        registry=create_default_tool_registry(),
+        planner_service=PlannerService(
+            llm_service,
+            tool_definitions=registry.definitions(),
+        ),
+        registry=registry,
         checkpointer=checkpointer,
+        grounded_answer_service=GroundedAnswerService(llm_service),
     )
 
 
@@ -89,6 +107,11 @@ def get_persistent_approval_workflow_service(
 def _planned_agent_response(
     result: PersistentApprovalWorkflowResult,
 ) -> PlannedAgentRunResponse:
+    grounded_answer = (
+        result.grounded_answer
+        if result.grounding_status == "completed"
+        else None
+    )
     return PlannedAgentRunResponse(
         run_id=result.run_id,
         thread_id=result.thread_id,
@@ -97,6 +120,16 @@ def _planned_agent_response(
         current_step_index=result.current_step_index,
         step_results=result.step_results,
         pending_approval=result.pending_approval,
+        answer=None if grounded_answer is None else grounded_answer.answer,
+        citations=(
+            []
+            if grounded_answer is None
+            else [
+                CitationResponse.model_validate(citation.model_dump())
+                for citation in grounded_answer.citations
+            ]
+        ),
+        answer_status=result.grounding_status,
     )
 
 
@@ -160,6 +193,16 @@ async def run_planned_agent(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The language model service is unavailable",
+        ) from exc
+    except GroundedAnswerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to generate grounded answer",
+        ) from exc
+    except EvidenceExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grounded answer evidence is invalid",
         ) from exc
     except ToolExecutionError as exc:
         raise HTTPException(
@@ -228,10 +271,61 @@ async def resume_planned_agent(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The language model service is unavailable",
         ) from exc
+    except GroundedAnswerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to generate grounded answer",
+        ) from exc
+    except EvidenceExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grounded answer evidence is invalid",
+        ) from exc
     except ToolExecutionError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Plan step execution failed",
+        ) from exc
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Agent persistence failed",
+        ) from exc
+
+    return _planned_agent_response(result)
+
+
+@router.post("/answer/retry", response_model=PlannedAgentRunResponse)
+async def retry_grounded_answer(
+    request: GroundedAnswerRetryRequest,
+    service: PersistentApprovalWorkflowService = Depends(
+        get_persistent_approval_workflow_service
+    ),
+) -> PlannedAgentRunResponse:
+    try:
+        result = await service.retry_grounded_answer(
+            request.run_id,
+            request.thread_id,
+        )
+    except ApprovalRunNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approval run not found",
+        ) from exc
+    except ApprovalRunThreadMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Run does not match approval thread",
+        ) from exc
+    except GroundedAnswerRetryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Grounded answer retry is not allowed",
+        ) from exc
+    except GroundedAnswerRetryStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grounded answer retry state is invalid",
         ) from exc
     except PersistenceError as exc:
         raise HTTPException(

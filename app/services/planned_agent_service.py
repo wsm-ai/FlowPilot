@@ -2,7 +2,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.graph.execution_workflow import create_plan_execution_graph
+from app.grounding.models import GroundedAnswer
+from app.grounding.lifecycle import GroundingSynthesisStatus, attempt_grounded_synthesis
 from app.schemas.planning import ExecutionPlan
+from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.planner_service import PlannerService, PlanningError
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
@@ -17,6 +20,9 @@ class PlannedAgentResult:
     current_step_index: int
     status: PlannedAgentStatus
     step_results: list[dict[str, Any]] = field(default_factory=list)
+    grounded_answer: GroundedAnswer | None = None
+    grounding_status: GroundingSynthesisStatus = "not_attempted"
+    grounding_error_type: str | None = None
 
 
 class PlannedAgentService:
@@ -24,9 +30,11 @@ class PlannedAgentService:
         self,
         planner_service: PlannerService,
         registry: ToolRegistry,
+        grounded_answer_service: GroundedAnswerService | None = None,
     ) -> None:
         self._planner_service = planner_service
         self._execution_graph = create_plan_execution_graph(registry)
+        self._grounded_answer_service = grounded_answer_service
 
     async def run(self, goal: str) -> PlannedAgentResult:
         plan = await self._planner_service.create_plan(goal)
@@ -56,12 +64,23 @@ class PlannedAgentService:
         else:
             raise PlanningError("Plan execution ended in an unknown state")
 
-        return PlannedAgentResult(
+        planned_result = PlannedAgentResult(
             plan=plan,
             current_step_index=current_step_index,
             status=status,
             step_results=self._convert_step_results(result.get("step_results", [])),
         )
+        if status == "completed" and self._grounded_answer_service is not None:
+            outcome = await attempt_grounded_synthesis(
+                self._grounded_answer_service,
+                goal=goal,
+                plan=planned_result.plan,
+                step_results=planned_result.step_results,
+            )
+            planned_result.grounded_answer = outcome.grounded_answer
+            planned_result.grounding_status = outcome.status
+            planned_result.grounding_error_type = outcome.error_type
+        return planned_result
 
     @staticmethod
     def _convert_step_results(records: Any) -> list[dict[str, Any]]:

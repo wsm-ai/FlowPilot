@@ -6,7 +6,14 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 
 from app.graph.approval_workflow import create_approval_graph
+from app.grounding.models import GroundedAnswer
+from app.grounding.lifecycle import (
+    GroundingSynthesisOutcome,
+    GroundingSynthesisStatus,
+    attempt_grounded_synthesis,
+)
 from app.schemas.planning import ExecutionPlan
+from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.planner_service import PlannerService, PlanningError
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
@@ -39,6 +46,9 @@ class ApprovalWorkflowResult:
     current_step_index: int
     step_results: list[dict[str, Any]] = field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
+    grounded_answer: GroundedAnswer | None = None
+    grounding_status: GroundingSynthesisStatus = "not_attempted"
+    grounding_error_type: str | None = None
 
 
 class ApprovalWorkflowService:
@@ -47,9 +57,11 @@ class ApprovalWorkflowService:
         planner_service: PlannerService,
         registry: ToolRegistry,
         checkpointer: BaseCheckpointSaver,
+        grounded_answer_service: GroundedAnswerService | None = None,
     ) -> None:
         self._planner_service = planner_service
         self._graph = create_approval_graph(registry, checkpointer)
+        self._grounded_answer_service = grounded_answer_service
 
     async def start(
         self,
@@ -82,7 +94,8 @@ class ApprovalWorkflowService:
             config=config,
         )
         snapshot = await self._graph.aget_state(config)
-        return self._build_result(resolved_thread_id, snapshot)
+        result = self._build_result(resolved_thread_id, snapshot)
+        return await self._synthesize_if_completed(result, goal)
 
     async def resume(
         self,
@@ -101,7 +114,41 @@ class ApprovalWorkflowService:
             config=config,
         )
         snapshot = await self._graph.aget_state(config)
-        return self._build_result(thread_id, snapshot)
+        result = self._build_result(thread_id, snapshot)
+        goal = snapshot.values.get("goal")
+        if not isinstance(goal, str):
+            raise PlanningError("Approval workflow returned an invalid goal")
+        return await self._synthesize_if_completed(result, goal)
+
+    async def _synthesize_if_completed(
+        self,
+        result: ApprovalWorkflowResult,
+        goal: str,
+    ) -> ApprovalWorkflowResult:
+        if result.status == "completed":
+            outcome = await self.retry_grounded_answer(
+                goal=goal,
+                plan=result.plan,
+                step_results=result.step_results,
+            )
+            result.grounded_answer = outcome.grounded_answer
+            result.grounding_status = outcome.status
+            result.grounding_error_type = outcome.error_type
+        return result
+
+    async def retry_grounded_answer(
+        self,
+        *,
+        goal: str,
+        plan: ExecutionPlan,
+        step_results: list[dict[str, Any]],
+    ) -> GroundingSynthesisOutcome:
+        return await attempt_grounded_synthesis(
+            self._grounded_answer_service,
+            goal=goal,
+            plan=plan,
+            step_results=step_results,
+        )
 
     @staticmethod
     def _config(thread_id: str) -> dict[str, dict[str, str]]:
