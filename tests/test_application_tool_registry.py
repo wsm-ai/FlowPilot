@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.api.agent as agent_api
 from app.api.dependencies import get_retriever, get_tool_registry
 from app.retrieval.models import KnowledgeChunk, RetrievalResult
 from app.tools.registry import create_default_tool_registry
@@ -86,3 +87,35 @@ def test_knowledge_base_tool_uses_injected_shared_retriever():
     assert len(retriever.queries) == 1
     assert retriever.queries[0].query == "enterprise login"
     assert result[0]["chunk_id"] == "CH-001"
+
+
+def test_approval_service_uses_same_registry_for_planning_and_execution(
+    monkeypatch,
+):
+    registry = get_tool_registry(FakeRetriever())
+    captured = {}
+
+    class FakePlannerService:
+        def __init__(self, llm_service, tool_definitions=None):
+            captured["tool_definitions"] = tool_definitions
+
+    class FakeApprovalWorkflowService:
+        def __init__(self, planner_service, registry, checkpointer):
+            captured["planner_service"] = planner_service
+            captured["registry"] = registry
+
+    monkeypatch.setattr(agent_api, "PlannerService", FakePlannerService)
+    monkeypatch.setattr(
+        agent_api,
+        "ApprovalWorkflowService",
+        FakeApprovalWorkflowService,
+    )
+
+    agent_api.get_approval_workflow_service(
+        llm_service=object(),
+        checkpointer=object(),
+        registry=registry,
+    )
+
+    assert captured["registry"] is registry
+    assert captured["tool_definitions"] == registry.definitions()
