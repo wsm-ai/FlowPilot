@@ -55,7 +55,11 @@ class SynthesisProvider:
     async def complete(self, messages, tools=None, tool_choice=None) -> LLMResponse:
         return LLMResponse(
             content=json.dumps(
-                {"answer": "Check enterprise SSO configuration.", "citation_ids": ["E1"]}
+                {
+                    "answer": "Check enterprise SSO configuration.",
+                    "support_basis": "knowledge_evidence",
+                    "citation_ids": ["E1"],
+                }
             )
         )
 

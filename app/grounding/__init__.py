@@ -3,6 +3,7 @@ from app.grounding.models import (
     Citation,
     GroundedAnswer,
     GroundedSynthesisResponse,
+    GroundingSupportBasis,
     GroundingEvidence,
 )
 
@@ -12,5 +13,6 @@ __all__ = [
     "GroundedAnswer",
     "GroundedSynthesisResponse",
     "GroundingEvidence",
+    "GroundingSupportBasis",
     "extract_grounding_evidence",
 ]

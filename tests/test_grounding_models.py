@@ -71,6 +71,43 @@ def test_grounded_answer_rejects_blank_answer():
 
 def test_synthesis_response_forbids_extra_fields_and_blank_citation_ids():
     with pytest.raises(ValidationError):
-        GroundedSynthesisResponse(answer="Answer", citation_ids=[], source="invented")
+        GroundedSynthesisResponse(
+            answer="Answer",
+            support_basis="insufficient",
+            citation_ids=[],
+            source="invented",
+        )
     with pytest.raises(ValidationError):
-        GroundedSynthesisResponse(answer="Answer", citation_ids=[" "])
+        GroundedSynthesisResponse(
+            answer="Answer",
+            support_basis="knowledge_evidence",
+            citation_ids=[" "],
+        )
+
+
+@pytest.mark.parametrize(
+    "support_basis",
+    ["knowledge_evidence", "workflow_results", "insufficient"],
+)
+def test_synthesis_response_accepts_defined_support_basis(support_basis):
+    response = GroundedSynthesisResponse(
+        answer="Answer",
+        support_basis=support_basis,
+        citation_ids=[],
+    )
+    assert response.support_basis == support_basis
+
+
+@pytest.mark.parametrize("support_basis", ["anything", "grounded", ""])
+def test_synthesis_response_rejects_unknown_support_basis(support_basis):
+    with pytest.raises(ValidationError):
+        GroundedSynthesisResponse(
+            answer="Answer",
+            support_basis=support_basis,
+            citation_ids=[],
+        )
+
+
+def test_synthesis_response_requires_support_basis():
+    with pytest.raises(ValidationError):
+        GroundedSynthesisResponse(answer="Answer", citation_ids=[])

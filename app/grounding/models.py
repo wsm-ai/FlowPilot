@@ -1,6 +1,6 @@
 import json
 import math
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -68,10 +68,18 @@ class GroundedAnswer(BaseModel):
         return _non_blank(value)
 
 
+GroundingSupportBasis = Literal[
+    "knowledge_evidence",
+    "workflow_results",
+    "insufficient",
+]
+
+
 class GroundedSynthesisResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     answer: str
+    support_basis: GroundingSupportBasis
     citation_ids: list[str] = Field(default_factory=list)
 
     @field_validator("answer")
