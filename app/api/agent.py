@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from app.grounding.evidence import EvidenceExtractionError
 from app.api.dependencies import (
     get_checkpointer,
     get_llm_service,
@@ -12,9 +13,11 @@ from app.providers.base import LLMProviderError
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
 from app.schemas.planned_agent import (
     ApprovalResumeRequest,
+    CitationResponse,
     PlannedAgentRunRequest,
     PlannedAgentRunResponse,
 )
+from app.services.grounded_answer_service import GroundedAnswerError, GroundedAnswerService
 from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalThreadConflictError,
@@ -69,6 +72,7 @@ def get_planned_agent_service(
             tool_definitions=registry.definitions(),
         ),
         registry=registry,
+        grounded_answer_service=GroundedAnswerService(llm_service),
     )
 
 
@@ -84,6 +88,7 @@ def get_approval_workflow_service(
         ),
         registry=registry,
         checkpointer=checkpointer,
+        grounded_answer_service=GroundedAnswerService(llm_service),
     )
 
 
@@ -99,6 +104,7 @@ def get_persistent_approval_workflow_service(
 def _planned_agent_response(
     result: PersistentApprovalWorkflowResult,
 ) -> PlannedAgentRunResponse:
+    grounded_answer = result.grounded_answer
     return PlannedAgentRunResponse(
         run_id=result.run_id,
         thread_id=result.thread_id,
@@ -107,6 +113,15 @@ def _planned_agent_response(
         current_step_index=result.current_step_index,
         step_results=result.step_results,
         pending_approval=result.pending_approval,
+        answer=None if grounded_answer is None else grounded_answer.answer,
+        citations=(
+            []
+            if grounded_answer is None
+            else [
+                CitationResponse.model_validate(citation.model_dump())
+                for citation in grounded_answer.citations
+            ]
+        ),
     )
 
 
@@ -170,6 +185,16 @@ async def run_planned_agent(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The language model service is unavailable",
+        ) from exc
+    except GroundedAnswerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to generate grounded answer",
+        ) from exc
+    except EvidenceExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grounded answer evidence is invalid",
         ) from exc
     except ToolExecutionError as exc:
         raise HTTPException(
@@ -237,6 +262,16 @@ async def resume_planned_agent(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The language model service is unavailable",
+        ) from exc
+    except GroundedAnswerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to generate grounded answer",
+        ) from exc
+    except EvidenceExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grounded answer evidence is invalid",
         ) from exc
     except ToolExecutionError as exc:
         raise HTTPException(

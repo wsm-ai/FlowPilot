@@ -24,6 +24,14 @@ class PlannedAgentRunRequest(BaseModel):
         return value
 
 
+class CitationResponse(BaseModel):
+    citation_id: str
+    chunk_id: str
+    document_id: str
+    source: str
+    title: str | None = None
+
+
 class PlannedAgentRunResponse(BaseModel):
     run_id: str
     thread_id: str
@@ -32,6 +40,8 @@ class PlannedAgentRunResponse(BaseModel):
     current_step_index: int
     step_results: list[dict[str, Any]]
     pending_approval: dict[str, Any] | None
+    answer: str | None = None
+    citations: list[CitationResponse] = Field(default_factory=list)
 
 
 class ApprovalResumeRequest(BaseModel):

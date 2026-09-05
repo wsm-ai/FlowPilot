@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
+from app.grounding.evidence import EvidenceExtractionError
+from app.grounding.models import GroundedAnswer
 from app.persistence.models import create_agent_run_record
 from app.persistence.repository import RunRepository
 from app.providers.base import LLMProviderError
@@ -15,6 +17,7 @@ from app.services.approval_workflow_service import (
     ApprovalWorkflowStatus,
 )
 from app.services.planner_service import PlanningError
+from app.services.grounded_answer_service import GroundedAnswerError
 from app.tools.base import ToolExecutionError
 
 
@@ -39,6 +42,7 @@ class PersistentApprovalWorkflowResult:
     current_step_index: int
     step_results: list[dict[str, Any]] = field(default_factory=list)
     pending_approval: dict[str, Any] | None = None
+    grounded_answer: GroundedAnswer | None = None
 
 
 WorkflowFailure = (
@@ -48,6 +52,8 @@ WorkflowFailure = (
     ApprovalThreadConflictError,
     ApprovalNotPendingError,
     ApprovalThreadNotFoundError,
+    GroundedAnswerError,
+    EvidenceExtractionError,
 )
 
 
@@ -138,6 +144,11 @@ class PersistentApprovalWorkflowService:
             "current_step_index": result.current_step_index,
             "step_results": result.step_results,
             "pending_approval": result.pending_approval,
+            "grounded_answer": (
+                None
+                if result.grounded_answer is None
+                else result.grounded_answer.model_dump(mode="json")
+            ),
         }
 
     @staticmethod
@@ -153,4 +164,5 @@ class PersistentApprovalWorkflowService:
             current_step_index=result.current_step_index,
             step_results=result.step_results,
             pending_approval=result.pending_approval,
+            grounded_answer=result.grounded_answer,
         )

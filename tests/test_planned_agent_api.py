@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.agent import get_persistent_approval_workflow_service
+from app.grounding.evidence import EvidenceExtractionError
+from app.grounding.models import Citation, GroundedAnswer
 from app.main import app
 from app.persistence.repository import PersistenceError
 from app.providers.base import LLMProviderError
@@ -18,6 +20,7 @@ from app.services.persistent_approval_workflow_service import (
     PersistentApprovalWorkflowResult,
 )
 from app.services.planner_service import PlanningError
+from app.services.grounded_answer_service import GroundedAnswerError
 from app.tools.base import ToolExecutionError
 
 
@@ -55,6 +58,18 @@ class FakePersistentApprovalWorkflowService:
                 }
             ],
             pending_approval=None,
+            grounded_answer=GroundedAnswer(
+                answer="Grounded feedback answer",
+                citations=[
+                    Citation(
+                        citation_id="E1",
+                        chunk_id="CH-1",
+                        document_id="DOC-1",
+                        source="support-handbook",
+                        title="Support Guide",
+                    )
+                ],
+            ),
         )
 
     async def resume(
@@ -68,6 +83,21 @@ class FakePersistentApprovalWorkflowService:
             current_step_index=1 if decision == "approve" else 0,
             step_results=[] if decision == "reject" else [{"step_id": 1}],
             pending_approval=None,
+            grounded_answer=(
+                GroundedAnswer(
+                    answer="Approved grounded answer",
+                    citations=[
+                        Citation(
+                            citation_id="E1",
+                            chunk_id="CH-1",
+                            document_id="DOC-1",
+                            source="support-handbook",
+                        )
+                    ],
+                )
+                if decision == "approve"
+                else None
+            ),
         )
 
 
@@ -99,6 +129,66 @@ def test_plan_run_returns_structured_result(client: TestClient):
         {"id": "FB-003"},
     ]
     assert body["pending_approval"] is None
+    assert body["answer"] == "Grounded feedback answer"
+    assert body["citations"] == [
+        {
+            "citation_id": "E1",
+            "chunk_id": "CH-1",
+            "document_id": "DOC-1",
+            "source": "support-handbook",
+            "title": "Support Guide",
+        }
+    ]
+
+
+def test_plan_run_pending_approval_has_no_grounded_answer(client: TestClient):
+    pending_plan = ExecutionPlan(
+        goal="Create issue",
+        steps=[
+            PlanStep(
+                id=1,
+                description="Create issue",
+                action="create_test_issue",
+                arguments={"title": "Login issue"},
+                requires_approval=True,
+            )
+        ],
+    )
+
+    class PendingService:
+        async def start(self, goal: str, *, thread_id=None):
+            return PersistentApprovalWorkflowResult(
+                run_id="run-pending",
+                thread_id="approval-thread",
+                plan=pending_plan,
+                status="approval_required",
+                current_step_index=0,
+                step_results=[],
+                pending_approval={
+                    "type": "plan_step_approval",
+                    "step_id": 1,
+                    "description": "Create issue",
+                    "action": "create_test_issue",
+                    "arguments": {"title": "Login issue"},
+                },
+                grounded_answer=None,
+            )
+
+    app.dependency_overrides[get_persistent_approval_workflow_service] = PendingService
+
+    response = client.post(
+        "/api/v1/agent/plan-run",
+        json={"goal": "Create issue", "thread_id": "approval-thread"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == "run-pending"
+    assert body["thread_id"] == "approval-thread"
+    assert body["status"] == "approval_required"
+    assert body["answer"] is None
+    assert body["citations"] == []
+    assert body["pending_approval"] is not None
 
 
 @pytest.mark.parametrize("goal", ["", "   "])
@@ -140,6 +230,16 @@ def test_plan_run_rejects_invalid_thread_id(client: TestClient, thread_id: str):
             PersistenceError("sensitive persistence error"),
             500,
             "Agent persistence failed",
+        ),
+        (
+            GroundedAnswerError("sensitive synthesis E999"),
+            502,
+            "Unable to generate grounded answer",
+        ),
+        (
+            EvidenceExtractionError("sensitive invalid evidence"),
+            500,
+            "Grounded answer evidence is invalid",
         ),
     ],
 )
@@ -198,6 +298,12 @@ def test_approval_resume_returns_unified_response(client: TestClient, decision: 
     assert body["thread_id"] == "approval-thread"
     assert body["status"] == ("completed" if decision == "approve" else "rejected")
     assert body["pending_approval"] is None
+    if decision == "approve":
+        assert body["answer"] == "Approved grounded answer"
+        assert body["citations"][0]["citation_id"] == "E1"
+    else:
+        assert body["answer"] is None
+        assert body["citations"] == []
 
 
 @pytest.mark.parametrize(
@@ -230,6 +336,8 @@ def test_approval_resume_rejects_invalid_request(client: TestClient, payload):
         (ToolExecutionError("sensitive tool"), 500, "Plan step execution failed"),
         (LLMProviderError("sensitive llm"), 502, "The language model service is unavailable"),
         (PersistenceError("sensitive persistence"), 500, "Agent persistence failed"),
+        (GroundedAnswerError("sensitive E999"), 502, "Unable to generate grounded answer"),
+        (EvidenceExtractionError("sensitive evidence"), 500, "Grounded answer evidence is invalid"),
     ],
 )
 def test_approval_resume_maps_errors_without_leaking_details(

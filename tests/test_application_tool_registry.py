@@ -97,12 +97,24 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
 
     class FakePlannerService:
         def __init__(self, llm_service, tool_definitions=None):
+            captured["planner_llm"] = llm_service
             captured["tool_definitions"] = tool_definitions
 
+    class FakeGroundedAnswerService:
+        def __init__(self, llm_service):
+            captured["grounding_llm"] = llm_service
+
     class FakeApprovalWorkflowService:
-        def __init__(self, planner_service, registry, checkpointer):
+        def __init__(
+            self,
+            planner_service,
+            registry,
+            checkpointer,
+            grounded_answer_service=None,
+        ):
             captured["planner_service"] = planner_service
             captured["registry"] = registry
+            captured["grounded_answer_service"] = grounded_answer_service
 
     monkeypatch.setattr(agent_api, "PlannerService", FakePlannerService)
     monkeypatch.setattr(
@@ -110,12 +122,20 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
         "ApprovalWorkflowService",
         FakeApprovalWorkflowService,
     )
+    monkeypatch.setattr(
+        agent_api,
+        "GroundedAnswerService",
+        FakeGroundedAnswerService,
+    )
 
+    llm_service = object()
     agent_api.get_approval_workflow_service(
-        llm_service=object(),
+        llm_service=llm_service,
         checkpointer=object(),
         registry=registry,
     )
 
     assert captured["registry"] is registry
     assert captured["tool_definitions"] == registry.definitions()
+    assert captured["planner_llm"] is llm_service
+    assert captured["grounding_llm"] is llm_service
