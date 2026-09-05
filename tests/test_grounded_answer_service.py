@@ -4,6 +4,7 @@ import json
 import pytest
 
 from app.grounding.evidence import EvidenceExtractionError
+from app.grounding.context import GroundingContextPolicy
 from app.providers.base import LLMProviderError
 from app.providers.types import LLMResponse
 from app.schemas.planning import ExecutionPlan, PlanStep
@@ -68,9 +69,16 @@ def workflow_steps(result_value):
     ]
 
 
-def synthesize(provider, step_results=None, goal="Troubleshoot login"):
+def synthesize(
+    provider,
+    step_results=None,
+    goal="Troubleshoot login",
+    context_policy=None,
+):
     return asyncio.run(
-        GroundedAnswerService(LLMService(provider)).synthesize(
+        GroundedAnswerService(
+            LLMService(provider), context_policy=context_policy
+        ).synthesize(
             goal=goal,
             plan=plan(),
             step_results=steps(result("CH-1", "Login Guide"), result("CH-2"))
@@ -287,3 +295,61 @@ def test_json_scalar_workflow_results_are_meaningful_support(result_value):
         "citation_ids": [],
     }))
     assert synthesize(provider, step_results=workflow_steps(result_value)).answer
+
+
+def test_only_prompt_visible_evidence_can_be_cited():
+    limited_policy = GroundingContextPolicy(max_evidence_items=1)
+    step_results = steps(result("CH-1"), result("CH-2"), result("CH-3"))
+    visible_provider = FakeProvider(json.dumps({
+        "answer": "Visible claim",
+        "support_basis": "knowledge_evidence",
+        "citation_ids": ["E1"],
+    }))
+    answer = synthesize(
+        visible_provider,
+        step_results=step_results,
+        context_policy=limited_policy,
+    )
+    assert answer.citations[0].citation_id == "E1"
+    payload = json.loads(visible_provider.requests[0][1]["content"])
+    assert [item["citation_id"] for item in payload["grounding_evidence"]] == ["E1"]
+
+    omitted_provider = FakeProvider(json.dumps({
+        "answer": "Invisible claim",
+        "support_basis": "knowledge_evidence",
+        "citation_ids": ["E2"],
+    }))
+    with pytest.raises(GroundedAnswerError, match="unknown citation"):
+        synthesize(
+            omitted_provider,
+            step_results=step_results,
+            context_policy=limited_policy,
+        )
+
+
+def test_prompt_evidence_obeys_injected_character_budgets():
+    large_steps = steps(
+        result("CH-1") | {"content": "a" * 20},
+        result("CH-2") | {"content": "b" * 20},
+        result("CH-3") | {"content": "c" * 20},
+    )
+    provider = FakeProvider(json.dumps({
+        "answer": "Insufficient preview",
+        "support_basis": "insufficient",
+        "citation_ids": [],
+    }))
+    synthesize(
+        provider,
+        step_results=large_steps,
+        context_policy=GroundingContextPolicy(
+            max_evidence_items=2,
+            max_chars_per_evidence=8,
+            max_total_evidence_chars=10,
+        ),
+    )
+    prompt_evidence = json.loads(provider.requests[0][1]["content"])[
+        "grounding_evidence"
+    ]
+    assert len(prompt_evidence) == 2
+    assert all(len(item["content"]) <= 8 for item in prompt_evidence)
+    assert sum(len(item["content"]) for item in prompt_evidence) <= 10

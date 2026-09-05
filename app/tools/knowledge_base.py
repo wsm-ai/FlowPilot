@@ -11,6 +11,9 @@ from app.retrieval.vector_store import VectorStoreError
 from app.tools.base import ToolExecutionError
 
 
+DEFAULT_MAX_KNOWLEDGE_OUTPUT_CHARS = 50_000
+
+
 class KnowledgeBaseSearchArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -46,8 +49,16 @@ class KnowledgeBaseTool:
         "or workflow step. Returns ranked knowledge chunks with source metadata."
     )
 
-    def __init__(self, retriever: Retriever) -> None:
+    def __init__(
+        self,
+        retriever: Retriever,
+        *,
+        max_output_chars: int = DEFAULT_MAX_KNOWLEDGE_OUTPUT_CHARS,
+    ) -> None:
+        if max_output_chars < 1:
+            raise ValueError("max_output_chars must be at least 1")
         self._retriever = retriever
+        self._max_output_chars = max_output_chars
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -82,12 +93,16 @@ class KnowledgeBaseTool:
                 "position": result.chunk.position,
                 "metadata": deepcopy(result.chunk.metadata),
             }
-            for result in results
+            for result in results[: validated.top_k]
         ]
         try:
-            json.dumps(output, ensure_ascii=False, allow_nan=False)
+            serialized = json.dumps(output, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise ToolExecutionError(
                 "Knowledge base search returned invalid data"
             ) from exc
+        if len(serialized) > self._max_output_chars:
+            raise ToolExecutionError(
+                "Knowledge base search result is too large"
+            )
         return output

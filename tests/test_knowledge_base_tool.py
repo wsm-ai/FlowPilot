@@ -25,12 +25,17 @@ class FakeRetriever:
         return self.results
 
 
-def retrieval_result(*, score: float = 0.91) -> RetrievalResult:
+def retrieval_result(
+    *,
+    score: float = 0.91,
+    chunk_id: str = "CH-001",
+    content: str = "Enterprise login troubleshooting",
+) -> RetrievalResult:
     return RetrievalResult(
         chunk=KnowledgeChunk(
-            chunk_id="CH-001",
+            chunk_id=chunk_id,
             document_id="DOC-001",
-            content="Enterprise login troubleshooting",
+            content=content,
             source="support-handbook",
             metadata={
                 "department": "support",
@@ -206,3 +211,30 @@ def test_default_registry_remains_unchanged():
     assert [item["function"]["name"] for item in definitions] == [
         "get_customer_feedback"
     ]
+
+
+def test_tool_defensively_enforces_requested_top_k():
+    results = [retrieval_result(chunk_id=f"CH-{index}") for index in range(5)]
+    output = asyncio.run(
+        KnowledgeBaseTool(FakeRetriever(results)).execute(
+            {"query": "login", "top_k": 2}
+        )
+    )
+    assert [item["chunk_id"] for item in output] == ["CH-0", "CH-1"]
+
+
+def test_oversized_serialized_tool_output_is_rejected():
+    tool = KnowledgeBaseTool(
+        FakeRetriever([retrieval_result(content="x" * 500)]),
+        max_output_chars=100,
+    )
+    with pytest.raises(
+        ToolExecutionError,
+        match="Knowledge base search result is too large",
+    ):
+        asyncio.run(tool.execute({"query": "login"}))
+
+
+def test_output_limit_configuration_must_be_positive():
+    with pytest.raises(ValueError, match="max_output_chars must be at least 1"):
+        KnowledgeBaseTool(FakeRetriever(), max_output_chars=0)

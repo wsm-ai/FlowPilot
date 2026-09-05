@@ -12,7 +12,15 @@ __all__ = [
     "EvidenceExtractionError",
     "GroundedAnswer",
     "GroundedSynthesisResponse",
+    "GroundingContext",
+    "GroundingContextPolicy",
     "GroundingEvidence",
     "GroundingSupportBasis",
     "extract_grounding_evidence",
+    "build_grounding_context",
 ]
+from app.grounding.context import (
+    GroundingContext,
+    GroundingContextPolicy,
+    build_grounding_context,
+)

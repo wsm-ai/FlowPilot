@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.grounding.context import GroundingContextPolicy, build_grounding_context
 from app.grounding.evidence import extract_grounding_evidence
 from app.grounding.models import Citation, GroundedAnswer, GroundedSynthesisResponse
 from app.providers.base import LLMProviderError
@@ -34,8 +35,13 @@ class GroundedAnswerError(Exception):
 
 
 class GroundedAnswerService:
-    def __init__(self, llm_service: LLMService) -> None:
+    def __init__(
+        self,
+        llm_service: LLMService,
+        context_policy: GroundingContextPolicy | None = None,
+    ) -> None:
         self._llm_service = llm_service
+        self._context_policy = context_policy or GroundingContextPolicy()
 
     async def synthesize(
         self,
@@ -48,21 +54,25 @@ class GroundedAnswerService:
             raise GroundedAnswerError("Grounded answer goal must not be blank")
 
         evidence = extract_grounding_evidence(step_results)
-        has_workflow_support = self._has_non_knowledge_workflow_support(
-            step_results
+        context = build_grounding_context(
+            evidence,
+            step_results,
+            self._context_policy,
         )
-        if not evidence and not has_workflow_support:
+        if not context.selected_evidence and not context.has_workflow_support:
             return GroundedAnswer(
                 answer=INSUFFICIENT_SUPPORT_ANSWER,
                 citations=[],
             )
 
-        evidence_map = {item.citation_id: item for item in evidence}
+        evidence_map = {
+            item.citation_id: item for item in context.selected_evidence
+        }
         user_payload = {
             "goal": goal,
             "plan": plan.model_dump(mode="json"),
-            "workflow_results": self._compact_results(step_results, evidence),
-            "grounding_evidence": [item.model_dump(mode="json") for item in evidence],
+            "workflow_results": context.workflow_results,
+            "grounding_evidence": context.prompt_evidence,
         }
         response = await self._llm_service.complete(
             messages=[
@@ -92,7 +102,7 @@ class GroundedAnswerService:
             ) from exc
 
         if synthesis.support_basis == "knowledge_evidence":
-            if not evidence:
+            if not context.selected_evidence:
                 raise GroundedAnswerError(
                     "Grounded answer has invalid support basis"
                 )
@@ -101,7 +111,7 @@ class GroundedAnswerService:
                     "Grounded answer is missing required citation"
                 )
         elif synthesis.support_basis == "workflow_results":
-            if not has_workflow_support or synthesis.citation_ids:
+            if not context.has_workflow_support or synthesis.citation_ids:
                 raise GroundedAnswerError(
                     "Grounded answer has invalid support basis"
                 )
@@ -130,55 +140,3 @@ class GroundedAnswerService:
             )
             seen_ids.add(citation_id)
         return GroundedAnswer(answer=synthesis.answer, citations=citations)
-
-    @staticmethod
-    def _has_non_knowledge_workflow_support(
-        step_results: list[dict[str, Any]],
-    ) -> bool:
-        for step in step_results:
-            if (
-                not isinstance(step, dict)
-                or step.get("action") == "search_knowledge_base"
-                or "result" not in step
-            ):
-                continue
-            result = step["result"]
-            if result is None:
-                continue
-            if isinstance(result, str):
-                if result.strip():
-                    return True
-                continue
-            if isinstance(result, (list, dict)):
-                if result:
-                    return True
-                continue
-            if isinstance(result, (bool, int, float)):
-                return True
-        return False
-
-    @staticmethod
-    def _compact_results(
-        step_results: list[dict[str, Any]],
-        evidence: list[Any],
-    ) -> list[dict[str, Any]]:
-        ids_by_chunk = {item.chunk_id: item.citation_id for item in evidence}
-        compact: list[dict[str, Any]] = []
-        for step in step_results:
-            if isinstance(step, dict) and step.get("action") == "search_knowledge_base":
-                result = step.get("result", [])
-                citation_ids = [
-                    ids_by_chunk[item["chunk_id"]]
-                    for item in result
-                    if isinstance(item, dict) and item.get("chunk_id") in ids_by_chunk
-                ]
-                compact.append(
-                    {
-                        "step_id": step.get("step_id"),
-                        "action": step["action"],
-                        "citation_ids": list(dict.fromkeys(citation_ids)),
-                    }
-                )
-            else:
-                compact.append(step)
-        return compact
