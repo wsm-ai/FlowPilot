@@ -8,3 +8,4 @@ python-dotenv
 langgraph
 aiosqlite
 langgraph-checkpoint-sqlite
+mcp>=2,<3
