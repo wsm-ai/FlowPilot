@@ -4,6 +4,18 @@ import pytest
 
 from app.tools.base import ToolExecutionError
 from app.tools.registry import create_default_tool_registry
+from app.tools.registry import ToolRegistry
+
+
+class MarkerTool:
+    description = "Marker tool"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, name):
+        self.name = name
+
+    async def execute(self, arguments):
+        return {"name": self.name}
 
 
 @pytest.fixture
@@ -106,3 +118,24 @@ def test_invalid_priority_raises_tool_execution_error(registry):
 def test_unknown_tool_raises_tool_execution_error(registry):
     with pytest.raises(ToolExecutionError):
         asyncio.run(registry.execute("unknown_tool", {}))
+
+
+def test_excluding_returns_restricted_registry_without_mutating_original():
+    registry = ToolRegistry()
+    safe_tool = MarkerTool("safe_tool")
+    approval_tool = MarkerTool("approval_tool")
+    registry.register(safe_tool)
+    registry.register(approval_tool)
+    excluded = {"approval_tool"}
+
+    restricted = registry.excluding(excluded)
+
+    assert [item["function"]["name"] for item in registry.definitions()] == [
+        "safe_tool",
+        "approval_tool",
+    ]
+    assert [item["function"]["name"] for item in restricted.definitions()] == [
+        "safe_tool"
+    ]
+    assert restricted.get("safe_tool") is safe_tool
+    assert excluded == {"approval_tool"}

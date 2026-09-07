@@ -5,6 +5,8 @@ from app.grounding.evidence import EvidenceExtractionError
 from app.api.dependencies import (
     get_checkpointer,
     get_llm_service,
+    get_mcp_approval_required_actions,
+    get_reactive_tool_registry,
     get_run_repository,
     get_tool_registry,
 )
@@ -49,7 +51,7 @@ router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
 def get_graph_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
     checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
-    registry: ToolRegistry = Depends(get_tool_registry),
+    registry: ToolRegistry = Depends(get_reactive_tool_registry),
 ) -> GraphAgentService:
     return GraphAgentService(
         llm_service=llm_service,
@@ -68,11 +70,15 @@ def get_persistent_agent_service(
 def get_planned_agent_service(
     llm_service: LLMService = Depends(get_llm_service),
     registry: ToolRegistry = Depends(get_tool_registry),
+    approval_required_actions: frozenset[str] = Depends(
+        get_mcp_approval_required_actions
+    ),
 ) -> PlannedAgentService:
     return PlannedAgentService(
         planner_service=PlannerService(
             llm_service,
             tool_definitions=registry.definitions(),
+            approval_required_actions=approval_required_actions,
         ),
         registry=registry,
         grounded_answer_service=GroundedAnswerService(llm_service),
@@ -83,11 +89,15 @@ def get_approval_workflow_service(
     llm_service: LLMService = Depends(get_llm_service),
     checkpointer: BaseCheckpointSaver = Depends(get_checkpointer),
     registry: ToolRegistry = Depends(get_tool_registry),
+    approval_required_actions: frozenset[str] = Depends(
+        get_mcp_approval_required_actions
+    ),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
         planner_service=PlannerService(
             llm_service,
             tool_definitions=registry.definitions(),
+            approval_required_actions=approval_required_actions,
         ),
         registry=registry,
         checkpointer=checkpointer,
