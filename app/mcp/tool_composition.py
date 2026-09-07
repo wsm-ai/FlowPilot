@@ -2,11 +2,11 @@ from dataclasses import dataclass
 import re
 
 from app.mcp.client import MCPClient, MCPToolRegistrationError
+from app.mcp.naming import is_valid_server_id
 from app.mcp.tool_adapter import MCPToolAdapter
 from app.tools.registry import ToolRegistry
 
 
-_SERVER_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _REMOTE_NAME_SEPARATOR = re.compile(r"[^a-z0-9]+")
 
 
@@ -37,7 +37,7 @@ async def compose_mcp_tools(
 ) -> MCPToolComposition:
     server_ids: set[str] = set()
     for binding in bindings:
-        if not _SERVER_ID_PATTERN.fullmatch(binding.server_id):
+        if not is_valid_server_id(binding.server_id):
             raise MCPToolRegistrationError("Invalid MCP server ID")
         if binding.server_id in server_ids:
             raise MCPToolRegistrationError("Duplicate MCP server ID")

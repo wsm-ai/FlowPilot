@@ -22,6 +22,14 @@ class ToolRegistry:
     def contains(self, name: str) -> bool:
         return name in self._tools
 
+    def excluding(self, names: set[str] | frozenset[str]) -> "ToolRegistry":
+        excluded = frozenset(names)
+        restricted = ToolRegistry()
+        for name, tool in self._tools.items():
+            if name not in excluded:
+                restricted.register(tool)
+        return restricted
+
     def definitions(self) -> list[dict[str, Any]]:
         return [
             {

@@ -1,18 +1,20 @@
-from copy import deepcopy
 import math
 from pathlib import Path
 from typing import Any
 
-import anyio
 from mcp import Client, MCPError as SDKMCPError, StdioServerParameters
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.mcp.client import (
     MCPConnectionError,
-    MCPDiscoveryError,
-    MCPToolCallError,
 )
 from app.mcp.models import MCPRemoteTool, MCPToolResult
+from app.mcp.sdk_client import (
+    TRANSPORT_ERRORS,
+    call_tool,
+    discover_tools,
+    is_sdk_timeout,
+)
 
 
 class MCPStdioServerConfig(BaseModel):
@@ -52,19 +54,6 @@ class MCPStdioServerConfig(BaseModel):
         return value
 
 
-_REQUEST_TIMEOUT = -32001
-_TRANSPORT_ERRORS = (
-    OSError,
-    anyio.EndOfStream,
-    anyio.BrokenResourceError,
-    anyio.ClosedResourceError,
-)
-
-
-def _is_sdk_timeout(exc: SDKMCPError) -> bool:
-    return exc.code == _REQUEST_TIMEOUT
-
-
 class StdioMCPClient:
     def __init__(self, config: MCPStdioServerConfig) -> None:
         self._config = config.model_copy(deep=True)
@@ -88,12 +77,12 @@ class StdioMCPClient:
         except TimeoutError as exc:
             raise MCPConnectionError("MCP stdio connection timed out") from exc
         except SDKMCPError as exc:
-            if _is_sdk_timeout(exc):
+            if is_sdk_timeout(exc):
                 raise MCPConnectionError(
                     "MCP stdio connection timed out"
                 ) from exc
             raise MCPConnectionError("MCP stdio connection failed") from exc
-        except _TRANSPORT_ERRORS as exc:
+        except TRANSPORT_ERRORS as exc:
             raise MCPConnectionError("MCP stdio connection failed") from exc
         self._client = sdk_client
         return self
@@ -105,102 +94,14 @@ class StdioMCPClient:
             await client.__aexit__(exc_type, exc, traceback)
 
     async def list_tools(self) -> list[MCPRemoteTool]:
-        client = self._connected_client()
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        seen_names: set[str] = set()
-        tools: list[MCPRemoteTool] = []
-
-        while True:
-            try:
-                response = await client.list_tools(cursor=cursor)
-            except TimeoutError as exc:
-                raise MCPDiscoveryError(
-                    "MCP tool discovery timed out"
-                ) from exc
-            except SDKMCPError as exc:
-                if _is_sdk_timeout(exc):
-                    raise MCPDiscoveryError(
-                        "MCP tool discovery timed out"
-                    ) from exc
-                raise MCPDiscoveryError("MCP tool discovery failed") from exc
-            except _TRANSPORT_ERRORS as exc:
-                raise MCPDiscoveryError("MCP tool discovery failed") from exc
-            except ValidationError as exc:
-                raise MCPDiscoveryError(
-                    "MCP tool discovery returned invalid data"
-                ) from exc
-
-            try:
-                for sdk_tool in response.tools:
-                    remote_tool = MCPRemoteTool(
-                        name=sdk_tool.name,
-                        description=sdk_tool.description or "",
-                        input_schema=deepcopy(sdk_tool.input_schema),
-                    )
-                    if remote_tool.name in seen_names:
-                        raise MCPDiscoveryError(
-                            "MCP tool discovery returned duplicate tool name"
-                        )
-                    seen_names.add(remote_tool.name)
-                    tools.append(remote_tool)
-                next_cursor = response.next_cursor
-                if next_cursor is None:
-                    return tools
-                if next_cursor in seen_cursors:
-                    raise ValueError("repeated pagination cursor")
-                seen_cursors.add(next_cursor)
-                cursor = next_cursor
-            except MCPDiscoveryError:
-                raise
-            except (AttributeError, TypeError, ValueError, ValidationError) as exc:
-                raise MCPDiscoveryError(
-                    "MCP tool discovery returned invalid data"
-                ) from exc
+        return await discover_tools(self._connected_client())
 
     async def call_tool(
         self,
         name: str,
         arguments: dict[str, Any],
     ) -> MCPToolResult:
-        client = self._connected_client()
-        try:
-            response = await client.call_tool(
-                name,
-                arguments=deepcopy(arguments),
-            )
-        except TimeoutError as exc:
-            raise MCPToolCallError("MCP tool call timed out") from exc
-        except SDKMCPError as exc:
-            if _is_sdk_timeout(exc):
-                raise MCPToolCallError("MCP tool call timed out") from exc
-            raise MCPToolCallError("MCP tool call failed") from exc
-        except _TRANSPORT_ERRORS as exc:
-            raise MCPToolCallError("MCP tool call failed") from exc
-        except ValidationError as exc:
-            raise MCPToolCallError(
-                "MCP tool call returned invalid data"
-            ) from exc
-
-        try:
-            content = [
-                block.model_dump(
-                    mode="json",
-                    by_alias=True,
-                    exclude_none=True,
-                )
-                for block in response.content
-            ]
-            structured_content = deepcopy(response.structured_content)
-            return MCPToolResult(
-                content=content,
-                structured_content=structured_content,
-                is_error=response.is_error,
-            )
-        except (AttributeError, TypeError, ValueError, ValidationError) as exc:
-            raise MCPToolCallError(
-                "MCP tool call returned invalid data"
-            ) from exc
+        return await call_tool(self._connected_client(), name, arguments)
 
     def _connected_client(self) -> Client:
         if self._client is None:

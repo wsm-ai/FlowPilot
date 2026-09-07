@@ -6,8 +6,7 @@ from app.persistence.repository import RunRepository
 from app.providers.deepseek import DeepSeekProvider
 from app.retrieval.base import Retriever
 from app.services.llm_service import LLMService
-from app.tools.knowledge_base import KnowledgeBaseTool
-from app.tools.registry import ToolRegistry, create_default_tool_registry
+from app.tools.registry import ToolRegistry
 
 
 def get_llm_service(settings: Settings = Depends(get_settings)) -> LLMService:
@@ -32,8 +31,19 @@ def get_retriever(request: Request) -> Retriever:
 
 
 def get_tool_registry(
-    retriever: Retriever = Depends(get_retriever),
+    request: Request,
 ) -> ToolRegistry:
-    registry = create_default_tool_registry()
-    registry.register(KnowledgeBaseTool(retriever))
-    return registry
+    try:
+        return request.app.state.tool_registry
+    except AttributeError as exc:
+        raise RuntimeError("Tool registry is not initialized") from exc
+
+
+def get_mcp_approval_required_actions(request: Request) -> frozenset[str]:
+    return request.app.state.mcp_approval_required_actions
+
+
+def get_reactive_tool_registry(request: Request) -> ToolRegistry:
+    registry = get_tool_registry(request)
+    approval_required_actions = get_mcp_approval_required_actions(request)
+    return registry.excluding(approval_required_actions)
