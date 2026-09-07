@@ -7,6 +7,10 @@ from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.core.config import get_settings
 from app.mcp.application import compose_configured_mcp_tools
+from app.mcp.server import (
+    create_mcp_export_registry,
+    flowpilot_mcp_application,
+)
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.persistence.sqlite_repository import SQLiteRunRepository
 from app.retrieval.chunking import SimpleTextChunker
@@ -50,6 +54,16 @@ async def lifespan(app: FastAPI):
         app.state.mcp_approval_required_actions = (
             mcp_composition.approval_required_actions
         )
+        export_registry = create_mcp_export_registry(
+            registry,
+            mcp_composition.approval_required_actions,
+        )
+        flowpilot_mcp_application.reset_server()
+        flowpilot_mcp_application.runtime.bind(export_registry)
+        exit_stack.callback(flowpilot_mcp_application.runtime.unbind)
+        await exit_stack.enter_async_context(
+            flowpilot_mcp_application.run_session_manager()
+        )
         yield
 
 
@@ -64,3 +78,4 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(chat_router)
 app.include_router(agent_router)
+app.mount("/mcp", flowpilot_mcp_application)

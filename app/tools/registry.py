@@ -30,6 +30,17 @@ class ToolRegistry:
                 restricted.register(tool)
         return restricted
 
+    def including(self, names: set[str] | frozenset[str]) -> "ToolRegistry":
+        included = frozenset(names)
+        missing = [name for name in included if name not in self._tools]
+        if missing:
+            raise ToolExecutionError("Requested tools are not registered")
+        selected = ToolRegistry()
+        for name, tool in self._tools.items():
+            if name in included:
+                selected.register(tool)
+        return selected
+
     def definitions(self) -> list[dict[str, Any]]:
         return [
             {
