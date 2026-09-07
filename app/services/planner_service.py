@@ -63,8 +63,14 @@ class PlannerService:
         self,
         llm_service: LLMService,
         tool_definitions: list[dict[str, Any]] | None = None,
+        approval_required_actions: set[str] | frozenset[str] | None = None,
     ) -> None:
         self._llm_service = llm_service
+        self._approval_required_actions = frozenset(
+            approval_required_actions or ()
+        )
+        if self._approval_required_actions & READ_ONLY_ACTIONS:
+            raise PlanningError("Conflicting tool approval policy")
         self._tool_catalog, self._allowed_actions = self._build_tool_catalog(
             tool_definitions
         )
@@ -107,6 +113,8 @@ class PlannerService:
         for step in plan.steps:
             if step.action in READ_ONLY_ACTIONS:
                 step.requires_approval = False
+            elif step.action in self._approval_required_actions:
+                step.requires_approval = True
         return plan
 
     @staticmethod

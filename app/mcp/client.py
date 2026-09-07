@@ -19,6 +19,10 @@ class MCPToolCallError(MCPError):
     """Raised when an MCP client cannot complete a remote tool call."""
 
 
+class MCPToolRegistrationError(MCPError):
+    """Raised when discovered MCP tools cannot be registered safely."""
+
+
 class MCPClient(Protocol):
     async def list_tools(self) -> list[MCPRemoteTool]:
         ...

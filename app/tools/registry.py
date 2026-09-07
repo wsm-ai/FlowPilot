@@ -19,6 +19,9 @@ class ToolRegistry:
         except KeyError as exc:
             raise ToolExecutionError(f"Unknown tool: {name}") from exc
 
+    def contains(self, name: str) -> bool:
+        return name in self._tools
+
     def definitions(self) -> list[dict[str, Any]]:
         return [
             {
