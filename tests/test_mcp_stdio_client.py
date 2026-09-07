@@ -102,6 +102,8 @@ def test_real_stdio_discovery_call_and_sdk_normalization():
         "add_numbers",
         "echo_text",
         "fail_tool",
+        "slow_tool",
+        "hard_exit",
     ]
     assert isinstance(result, MCPToolResult)
     assert result.is_error is False
@@ -159,8 +161,9 @@ class FakeSDKClient:
         is_error=False,
     )
 
-    def __init__(self, parameters):
+    def __init__(self, parameters, *, read_timeout_seconds=None):
         self.parameters = parameters
+        self.read_timeout_seconds = read_timeout_seconds
         self.cursors = []
         self.call_arguments = None
 

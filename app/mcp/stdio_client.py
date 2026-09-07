@@ -1,7 +1,9 @@
 from copy import deepcopy
+import math
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp import Client, MCPError as SDKMCPError, StdioServerParameters
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -20,6 +22,7 @@ class MCPStdioServerConfig(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] | None = Field(default=None, repr=False)
     cwd: str | None = None
+    read_timeout_seconds: float | None = 30.0
 
     @field_validator("command")
     @classmethod
@@ -39,6 +42,28 @@ class MCPStdioServerConfig(BaseModel):
             raise ValueError("cwd must not be blank")
         return normalized
 
+    @field_validator("read_timeout_seconds")
+    @classmethod
+    def timeout_must_be_positive_and_finite(
+        cls, value: float | None
+    ) -> float | None:
+        if value is not None and (value <= 0 or not math.isfinite(value)):
+            raise ValueError("read_timeout_seconds must be positive and finite")
+        return value
+
+
+_REQUEST_TIMEOUT = -32001
+_TRANSPORT_ERRORS = (
+    OSError,
+    anyio.EndOfStream,
+    anyio.BrokenResourceError,
+    anyio.ClosedResourceError,
+)
+
+
+def _is_sdk_timeout(exc: SDKMCPError) -> bool:
+    return exc.code == _REQUEST_TIMEOUT
+
 
 class StdioMCPClient:
     def __init__(self, config: MCPStdioServerConfig) -> None:
@@ -54,10 +79,21 @@ class StdioMCPClient:
             env=None if self._config.env is None else dict(self._config.env),
             cwd=None if self._config.cwd is None else Path(self._config.cwd),
         )
-        sdk_client = Client(parameters)
+        sdk_client = Client(
+            parameters,
+            read_timeout_seconds=self._config.read_timeout_seconds,
+        )
         try:
             await sdk_client.__aenter__()
-        except (OSError, SDKMCPError) as exc:
+        except TimeoutError as exc:
+            raise MCPConnectionError("MCP stdio connection timed out") from exc
+        except SDKMCPError as exc:
+            if _is_sdk_timeout(exc):
+                raise MCPConnectionError(
+                    "MCP stdio connection timed out"
+                ) from exc
+            raise MCPConnectionError("MCP stdio connection failed") from exc
+        except _TRANSPORT_ERRORS as exc:
             raise MCPConnectionError("MCP stdio connection failed") from exc
         self._client = sdk_client
         return self
@@ -78,8 +114,22 @@ class StdioMCPClient:
         while True:
             try:
                 response = await client.list_tools(cursor=cursor)
-            except (OSError, SDKMCPError) as exc:
+            except TimeoutError as exc:
+                raise MCPDiscoveryError(
+                    "MCP tool discovery timed out"
+                ) from exc
+            except SDKMCPError as exc:
+                if _is_sdk_timeout(exc):
+                    raise MCPDiscoveryError(
+                        "MCP tool discovery timed out"
+                    ) from exc
                 raise MCPDiscoveryError("MCP tool discovery failed") from exc
+            except _TRANSPORT_ERRORS as exc:
+                raise MCPDiscoveryError("MCP tool discovery failed") from exc
+            except ValidationError as exc:
+                raise MCPDiscoveryError(
+                    "MCP tool discovery returned invalid data"
+                ) from exc
 
             try:
                 for sdk_tool in response.tools:
@@ -119,8 +169,18 @@ class StdioMCPClient:
                 name,
                 arguments=deepcopy(arguments),
             )
-        except (OSError, SDKMCPError) as exc:
+        except TimeoutError as exc:
+            raise MCPToolCallError("MCP tool call timed out") from exc
+        except SDKMCPError as exc:
+            if _is_sdk_timeout(exc):
+                raise MCPToolCallError("MCP tool call timed out") from exc
             raise MCPToolCallError("MCP tool call failed") from exc
+        except _TRANSPORT_ERRORS as exc:
+            raise MCPToolCallError("MCP tool call failed") from exc
+        except ValidationError as exc:
+            raise MCPToolCallError(
+                "MCP tool call returned invalid data"
+            ) from exc
 
         try:
             content = [
@@ -138,7 +198,9 @@ class StdioMCPClient:
                 is_error=response.is_error,
             )
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:
-            raise MCPToolCallError("MCP tool call failed") from exc
+            raise MCPToolCallError(
+                "MCP tool call returned invalid data"
+            ) from exc
 
     def _connected_client(self) -> Client:
         if self._client is None:
