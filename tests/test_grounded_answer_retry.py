@@ -15,6 +15,15 @@ from app.services.persistent_approval_workflow_service import (
     PersistentApprovalWorkflowService,
 )
 from app.tools.registry import create_default_tool_registry
+from tests.support.side_effects import PASSTHROUGH_SIDE_EFFECT_EXECUTOR
+
+
+_ApprovalWorkflowService = ApprovalWorkflowService
+
+
+def ApprovalWorkflowService(*args, **kwargs):
+    kwargs.setdefault("side_effect_executor", PASSTHROUGH_SIDE_EFFECT_EXECUTOR)
+    return _ApprovalWorkflowService(*args, **kwargs)
 
 
 class SpyPlanner:

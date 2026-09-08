@@ -13,6 +13,7 @@ from app.grounding.lifecycle import (
     attempt_grounded_synthesis,
 )
 from app.schemas.planning import ExecutionPlan
+from app.reliability.side_effects import SideEffectExecutor
 from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.planner_service import PlannerService, PlanningError
 from app.tools.base import ToolExecutionError
@@ -58,9 +59,12 @@ class ApprovalWorkflowService:
         registry: ToolRegistry,
         checkpointer: BaseCheckpointSaver,
         grounded_answer_service: GroundedAnswerService | None = None,
+        side_effect_executor: SideEffectExecutor | None = None,
     ) -> None:
         self._planner_service = planner_service
-        self._graph = create_approval_graph(registry, checkpointer)
+        self._graph = create_approval_graph(
+            registry, checkpointer, side_effect_executor
+        )
         self._grounded_answer_service = grounded_answer_service
 
     async def start(
@@ -101,8 +105,10 @@ class ApprovalWorkflowService:
         self,
         thread_id: str,
         decision: Literal["approve", "reject"],
+        *,
+        run_id: str | None = None,
     ) -> ApprovalWorkflowResult:
-        config = self._config(thread_id)
+        config = self._config(thread_id, run_id=run_id)
         snapshot = await self._graph.aget_state(config)
         if not snapshot.values:
             raise ApprovalThreadNotFoundError("Approval thread not found")
@@ -151,8 +157,13 @@ class ApprovalWorkflowService:
         )
 
     @staticmethod
-    def _config(thread_id: str) -> dict[str, dict[str, str]]:
-        return {"configurable": {"thread_id": thread_id}}
+    def _config(
+        thread_id: str, *, run_id: str | None = None
+    ) -> dict[str, dict[str, str]]:
+        configurable = {"thread_id": thread_id}
+        if run_id is not None:
+            configurable["run_id"] = run_id
+        return {"configurable": configurable}
 
     @staticmethod
     def _build_result(thread_id: str, snapshot: Any) -> ApprovalWorkflowResult:

@@ -26,6 +26,15 @@ from app.services.llm_service import LLMService
 from app.services.planner_service import PlannerService
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
+from tests.support.side_effects import PASSTHROUGH_SIDE_EFFECT_EXECUTOR
+
+
+_ApprovalWorkflowService = ApprovalWorkflowService
+
+
+def ApprovalWorkflowService(*args, **kwargs):
+    kwargs.setdefault("side_effect_executor", PASSTHROUGH_SIDE_EFFECT_EXECUTOR)
+    return _ApprovalWorkflowService(*args, **kwargs)
 
 
 SERVER_PATH = (
@@ -328,7 +337,9 @@ def test_hitl_timeout_calls_remote_side_effect_only_after_approval_once(
                 )
                 before = list(client._client.call_tool_calls)
                 with pytest.raises(ToolExecutionError):
-                    await service.resume("timeout-thread", "approve")
+                    await service.resume(
+                        "timeout-thread", "approve", run_id="run-timeout"
+                    )
                 after = list(client._client.call_tool_calls)
                 return started, before, after
 

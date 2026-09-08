@@ -11,6 +11,15 @@ from app.services.approval_workflow_service import (
     ApprovalWorkflowService,
 )
 from app.tools.registry import ToolRegistry, create_default_tool_registry
+from tests.support.side_effects import PASSTHROUGH_SIDE_EFFECT_EXECUTOR
+
+
+_ApprovalWorkflowService = ApprovalWorkflowService
+
+
+def ApprovalWorkflowService(*args, **kwargs):
+    kwargs.setdefault("side_effect_executor", PASSTHROUGH_SIDE_EFFECT_EXECUTOR)
+    return _ApprovalWorkflowService(*args, **kwargs)
 
 
 class FakePlannerService:
@@ -168,7 +177,9 @@ def test_resume_approve_or_reject(
                 FakePlannerService(approval_plan()), registry, saver
             )
             await service.start("Create issue", thread_id="approval-thread")
-            result = await service.resume("approval-thread", decision)
+            result = await service.resume(
+                "approval-thread", decision, run_id="run-approval"
+            )
             return result, tool
 
     result, tool = asyncio.run(scenario())
@@ -202,7 +213,9 @@ def test_finished_thread_cannot_be_resumed_again(tmp_path, decision):
                 FakePlannerService(approval_plan()), registry, saver
             )
             await service.start("Create issue", thread_id="finished-thread")
-            await service.resume("finished-thread", decision)
+            await service.resume(
+                "finished-thread", decision, run_id="run-finished"
+            )
             calls_before_retry = tool.call_count
             with pytest.raises(ApprovalNotPendingError):
                 await service.resume("finished-thread", decision)
@@ -221,7 +234,9 @@ def test_approve_can_advance_to_another_pending_approval(tmp_path):
                 FakePlannerService(approval_plan(2)), registry, saver
             )
             await service.start("Create issues", thread_id="multiple-thread")
-            result = await service.resume("multiple-thread", "approve")
+            result = await service.resume(
+                "multiple-thread", "approve", run_id="run-multiple"
+            )
             return result, tool
 
     result, tool = asyncio.run(scenario())
@@ -250,7 +265,9 @@ def test_resume_survives_sqlite_saver_reconnection(tmp_path):
             service_b = ApprovalWorkflowService(
                 FakePlannerService(approval_plan()), registry, saver_b
             )
-            resumed = await service_b.resume("durable-thread", "approve")
+            resumed = await service_b.resume(
+                "durable-thread", "approve", run_id="run-durable"
+            )
             return started, resumed
 
     started, resumed = asyncio.run(scenario())

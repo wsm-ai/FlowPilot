@@ -18,6 +18,7 @@ from app.services.approval_workflow_service import (
 )
 from app.services.planner_service import PlanningError
 from app.tools.base import ToolExecutionError
+from app.reliability.side_effects import SideEffectExecutionError
 
 
 class ApprovalRunNotFoundError(Exception):
@@ -61,6 +62,7 @@ WorkflowFailure = (
     ApprovalThreadConflictError,
     ApprovalNotPendingError,
     ApprovalThreadNotFoundError,
+    SideEffectExecutionError,
 )
 
 
@@ -128,6 +130,7 @@ class PersistentApprovalWorkflowService:
             workflow_result = await self._workflow_service.resume(
                 thread_id,
                 decision,
+                run_id=run_id,
             )
         except WorkflowFailure as exc:
             await self._run_repository.update(

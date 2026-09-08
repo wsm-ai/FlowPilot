@@ -35,6 +35,11 @@ class SpyIssueTool:
         return {"issue_id": "TEST-001", "title": arguments["title"]}
 
 
+class PassthroughSideEffectExecutor:
+    async def execute(self, *, operation, **kwargs):
+        return await operation()
+
+
 def registry_with_spy() -> tuple[ToolRegistry, SpyIssueTool]:
     registry = create_default_tool_registry()
     tool = SpyIssueTool()
@@ -71,7 +76,7 @@ def initial_state() -> dict[str, object]:
 
 
 def config(thread_id: str) -> dict[str, dict[str, str]]:
-    return {"configurable": {"thread_id": thread_id}}
+    return {"configurable": {"thread_id": thread_id, "run_id": thread_id}}
 
 
 def expected_payload() -> dict[str, object]:
@@ -88,7 +93,9 @@ def test_approval_step_interrupts_with_safe_payload_and_no_side_effects(tmp_path
     async def scenario():
         async with async_checkpoint_saver(tmp_path / "approval.sqlite") as saver:
             registry, tool = registry_with_spy()
-            graph = create_approval_graph(registry, saver)
+            graph = create_approval_graph(
+                registry, saver, PassthroughSideEffectExecutor()
+            )
             thread_config = config("approval-thread")
             result = await graph.ainvoke(initial_state(), config=thread_config)
             snapshot = await graph.aget_state(thread_config)
@@ -111,7 +118,9 @@ def test_approval_graph_resumes_with_valid_decision(tmp_path, decision: str):
     async def scenario():
         async with async_checkpoint_saver(tmp_path / f"{decision}.sqlite") as saver:
             registry, tool = registry_with_spy()
-            graph = create_approval_graph(registry, saver)
+            graph = create_approval_graph(
+                registry, saver, PassthroughSideEffectExecutor()
+            )
             thread_config = config(f"{decision}-thread")
             await graph.ainvoke(initial_state(), config=thread_config)
             result = await graph.ainvoke(
@@ -143,7 +152,9 @@ def test_invalid_resume_payload_raises_planning_error(tmp_path, resume_value):
     async def scenario():
         async with async_checkpoint_saver(tmp_path / "invalid.sqlite") as saver:
             registry, _ = registry_with_spy()
-            graph = create_approval_graph(registry, saver)
+            graph = create_approval_graph(
+                registry, saver, PassthroughSideEffectExecutor()
+            )
             thread_config = config("invalid-thread")
             await graph.ainvoke(initial_state(), config=thread_config)
             await graph.ainvoke(Command(resume=resume_value), config=thread_config)
@@ -159,13 +170,17 @@ def test_approval_resume_survives_saver_reconnection(tmp_path):
     async def scenario():
         async with async_checkpoint_saver(database_path) as saver_a:
             registry, tool = registry_with_spy()
-            graph_a = create_approval_graph(registry, saver_a)
+            graph_a = create_approval_graph(
+                registry, saver_a, PassthroughSideEffectExecutor()
+            )
             await graph_a.ainvoke(initial_state(), config=thread_config)
             snapshot = await graph_a.aget_state(thread_config)
             assert snapshot.values["pending_approval"] == expected_payload()
 
         async with async_checkpoint_saver(database_path) as saver_b:
-            graph_b = create_approval_graph(registry, saver_b)
+            graph_b = create_approval_graph(
+                registry, saver_b, PassthroughSideEffectExecutor()
+            )
             result = await graph_b.ainvoke(
                 Command(resume={"decision": "approve"}),
                 config=thread_config,
@@ -185,7 +200,9 @@ def test_approval_threads_are_isolated(tmp_path):
     async def scenario():
         async with async_checkpoint_saver(tmp_path / "threads.sqlite") as saver:
             registry, tool = registry_with_spy()
-            graph = create_approval_graph(registry, saver)
+            graph = create_approval_graph(
+                registry, saver, PassthroughSideEffectExecutor()
+            )
             config_a = config("thread-a")
             config_b = config("thread-b")
             await graph.ainvoke(initial_state(), config=config_a)
@@ -312,17 +329,21 @@ def test_approved_executor_rejects_uncleared_pending_approval():
 
 
 def test_approved_executor_propagates_unknown_tool_error():
-    executor = create_approved_plan_step_executor(ToolRegistry())
+    executor = create_approved_plan_step_executor(
+        ToolRegistry(), PassthroughSideEffectExecutor()
+    )
 
     with pytest.raises(ToolExecutionError):
-        asyncio.run(executor(approved_state()))
+        asyncio.run(executor(approved_state(), config("unknown-tool")))
 
 
 def test_approved_executor_executes_registered_tool_once():
     registry, tool = registry_with_spy()
-    executor = create_approved_plan_step_executor(registry)
+    executor = create_approved_plan_step_executor(
+        registry, PassthroughSideEffectExecutor()
+    )
 
-    result = asyncio.run(executor(approved_state()))
+    result = asyncio.run(executor(approved_state(), config("execute-once")))
 
     assert tool.call_count == 1
     assert tool.arguments_received == [{"title": "Critical login bug"}]
@@ -355,7 +376,9 @@ def test_mixed_plan_runs_normal_step_then_waits_for_approval(tmp_path):
     async def scenario():
         async with async_checkpoint_saver(tmp_path / "mixed.sqlite") as saver:
             registry, tool = registry_with_spy()
-            graph = create_approval_graph(registry, saver)
+            graph = create_approval_graph(
+                registry, saver, PassthroughSideEffectExecutor()
+            )
             thread_config = config("mixed-thread")
             await graph.ainvoke(state, config=thread_config)
             paused = await graph.aget_state(thread_config)
@@ -380,7 +403,9 @@ def test_repeated_resume_does_not_repeat_approved_side_effect(tmp_path):
     async def scenario():
         async with async_checkpoint_saver(tmp_path / "repeat.sqlite") as saver:
             registry, tool = registry_with_spy()
-            graph = create_approval_graph(registry, saver)
+            graph = create_approval_graph(
+                registry, saver, PassthroughSideEffectExecutor()
+            )
             thread_config = config("repeat-thread")
             await graph.ainvoke(initial_state(), config=thread_config)
             await graph.ainvoke(
@@ -403,11 +428,13 @@ def test_approved_tool_failure_does_not_advance_step():
 
     registry = ToolRegistry()
     registry.register(FailingTool())
-    executor = create_approved_plan_step_executor(registry)
+    executor = create_approved_plan_step_executor(
+        registry, PassthroughSideEffectExecutor()
+    )
     state = approved_state()
 
     with pytest.raises(ToolExecutionError):
-        asyncio.run(executor(state))
+        asyncio.run(executor(state, config("failing-tool")))
 
     assert state["current_step_index"] == 0
     assert state["step_results"] == []

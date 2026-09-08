@@ -189,6 +189,7 @@ def test_production_lifespan_composes_http_tools_and_planner_policy(monkeypatch)
                 checkpointer=main_module.app.state.checkpointer,
                 registry=registry,
                 approval_required_actions=policy,
+                side_effect_executor=main_module.app.state.side_effect_executor,
             )
 
     assert names == {

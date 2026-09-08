@@ -13,6 +13,10 @@ from app.mcp.server import (
 )
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.persistence.sqlite_repository import SQLiteRunRepository
+from app.persistence.side_effect_repository import (
+    SQLiteSideEffectExecutionRepository,
+)
+from app.reliability.side_effects import SideEffectExecutor
 from app.retrieval.chunking import SimpleTextChunker
 from app.retrieval.demo_knowledge import bootstrap_demo_knowledge_base
 from app.retrieval.hash_embedding import HashEmbeddingProvider
@@ -29,6 +33,10 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     run_repository = SQLiteRunRepository("data/flowpilot.db")
     await run_repository.initialize()
+    side_effect_repository = SQLiteSideEffectExecutionRepository(
+        "data/flowpilot.db"
+    )
+    await side_effect_repository.initialize()
     embedding_provider = HashEmbeddingProvider()
     vector_store = InMemoryVectorStore()
     chunker = SimpleTextChunker()
@@ -48,6 +56,9 @@ async def lifespan(app: FastAPI):
             exit_stack,
         )
         app.state.run_repository = run_repository
+        app.state.side_effect_executor = SideEffectExecutor(
+            side_effect_repository
+        )
         app.state.checkpointer = checkpointer
         app.state.retriever = retriever
         app.state.tool_registry = registry

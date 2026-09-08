@@ -2,17 +2,15 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.mcp.client import (
-    MCPConnectionError,
-    MCPDiscoveryError,
-    MCPToolCallError,
-    MCPToolRegistrationError,
-)
 from app.persistence.repository import PersistenceError
 from app.providers.base import LLMProviderError
 from app.services.grounded_answer_service import GroundedAnswerError
 from app.services.planner_service import PlanningError
 from app.tools.base import ToolExecutionError
+from app.reliability.side_effects import (
+    SideEffectConflictError,
+    SideEffectReplayBlockedError,
+)
 
 
 class FailureCategory(StrEnum):
@@ -48,48 +46,30 @@ _FAILURE_MAPPINGS: tuple[
     tuple[type[BaseException], FailureDescriptor], ...
 ] = (
     (
+        SideEffectReplayBlockedError,
+        FailureDescriptor(
+            domain=FailureDomain.WORKFLOW,
+            category=FailureCategory.AMBIGUOUS_SIDE_EFFECT,
+            code="side_effect_replay_blocked",
+            safe_message="Side-effect execution replay is blocked",
+        ),
+    ),
+    (
+        SideEffectConflictError,
+        FailureDescriptor(
+            domain=FailureDomain.WORKFLOW,
+            category=FailureCategory.PERMANENT,
+            code="side_effect_execution_conflict",
+            safe_message="Side-effect execution conflicts with existing record",
+        ),
+    ),
+    (
         asyncio.CancelledError,
         FailureDescriptor(
             domain=FailureDomain.WORKFLOW,
             category=FailureCategory.CANCELLED,
             code="operation_cancelled",
             safe_message="Operation cancelled",
-        ),
-    ),
-    (
-        MCPConnectionError,
-        FailureDescriptor(
-            domain=FailureDomain.MCP,
-            category=FailureCategory.TRANSIENT,
-            code="mcp_connection_failure",
-            safe_message="MCP connection failed",
-        ),
-    ),
-    (
-        MCPDiscoveryError,
-        FailureDescriptor(
-            domain=FailureDomain.MCP,
-            category=FailureCategory.TRANSIENT,
-            code="mcp_discovery_failure",
-            safe_message="MCP tool discovery failed",
-        ),
-    ),
-    (
-        MCPToolCallError,
-        FailureDescriptor(
-            domain=FailureDomain.MCP,
-            category=FailureCategory.TRANSIENT,
-            code="mcp_tool_call_failure",
-            safe_message="MCP tool call failed",
-        ),
-    ),
-    (
-        MCPToolRegistrationError,
-        FailureDescriptor(
-            domain=FailureDomain.MCP,
-            category=FailureCategory.CONFIGURATION,
-            code="mcp_tool_registration_failure",
-            safe_message="MCP tool registration failed",
         ),
     ),
     (
@@ -155,10 +135,55 @@ def classify_failure(
     category: FailureCategory | None = None,
 ) -> FailureDescriptor:
     """Classify an exception without exposing or inspecting its message."""
+    from app.mcp.client import (
+        MCPConnectionError,
+        MCPDiscoveryError,
+        MCPToolCallError,
+        MCPToolRegistrationError,
+    )
+
+    mcp_mappings = (
+        (
+            MCPConnectionError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.TRANSIENT,
+                "mcp_connection_failure",
+                "MCP connection failed",
+            ),
+        ),
+        (
+            MCPDiscoveryError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.TRANSIENT,
+                "mcp_discovery_failure",
+                "MCP tool discovery failed",
+            ),
+        ),
+        (
+            MCPToolCallError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.TRANSIENT,
+                "mcp_tool_call_failure",
+                "MCP tool call failed",
+            ),
+        ),
+        (
+            MCPToolRegistrationError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.CONFIGURATION,
+                "mcp_tool_registration_failure",
+                "MCP tool registration failed",
+            ),
+        ),
+    )
     descriptor = next(
         (
             candidate
-            for exception_type, candidate in _FAILURE_MAPPINGS
+            for exception_type, candidate in mcp_mappings + _FAILURE_MAPPINGS
             if isinstance(exc, exception_type)
         ),
         _UNCLASSIFIED_FAILURE,

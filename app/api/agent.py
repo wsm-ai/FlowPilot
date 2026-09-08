@@ -8,9 +8,11 @@ from app.api.dependencies import (
     get_mcp_approval_required_actions,
     get_reactive_tool_registry,
     get_run_repository,
+    get_side_effect_executor,
     get_tool_registry,
 )
 from app.persistence.repository import PersistenceError, RunRepository
+from app.reliability.side_effects import SideEffectExecutor
 from app.providers.base import LLMProviderError
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
 from app.schemas.planned_agent import (
@@ -92,6 +94,7 @@ def get_approval_workflow_service(
     approval_required_actions: frozenset[str] = Depends(
         get_mcp_approval_required_actions
     ),
+    side_effect_executor: SideEffectExecutor = Depends(get_side_effect_executor),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
         planner_service=PlannerService(
@@ -102,6 +105,7 @@ def get_approval_workflow_service(
         registry=registry,
         checkpointer=checkpointer,
         grounded_answer_service=GroundedAnswerService(llm_service),
+        side_effect_executor=side_effect_executor,
     )
 
 

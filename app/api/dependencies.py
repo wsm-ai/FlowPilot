@@ -3,6 +3,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.core.config import Settings, get_settings
 from app.persistence.repository import RunRepository
+from app.reliability.side_effects import SideEffectExecutor
 from app.providers.deepseek import DeepSeekProvider
 from app.retrieval.base import Retriever
 from app.services.llm_service import LLMService
@@ -15,6 +16,10 @@ def get_llm_service(settings: Settings = Depends(get_settings)) -> LLMService:
 
 def get_run_repository(request: Request) -> RunRepository:
     return request.app.state.run_repository
+
+
+def get_side_effect_executor(request: Request) -> SideEffectExecutor:
+    return request.app.state.side_effect_executor
 
 
 def get_checkpointer(request: Request) -> BaseCheckpointSaver:
