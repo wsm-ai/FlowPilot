@@ -11,6 +11,11 @@ from app.reliability.side_effects import (
     SideEffectConflictError,
     SideEffectReplayBlockedError,
 )
+from app.reliability.timeouts import (
+    ReadOperationTimeoutError,
+    SideEffectOperationTimeoutError,
+    UnknownOperationTimeoutError,
+)
 
 
 class FailureCategory(StrEnum):
@@ -45,6 +50,33 @@ class FailureDescriptor:
 _FAILURE_MAPPINGS: tuple[
     tuple[type[BaseException], FailureDescriptor], ...
 ] = (
+    (
+        ReadOperationTimeoutError,
+        FailureDescriptor(
+            domain=FailureDomain.WORKFLOW,
+            category=FailureCategory.TRANSIENT,
+            code="read_operation_timeout",
+            safe_message="Read operation timed out",
+        ),
+    ),
+    (
+        SideEffectOperationTimeoutError,
+        FailureDescriptor(
+            domain=FailureDomain.WORKFLOW,
+            category=FailureCategory.AMBIGUOUS_SIDE_EFFECT,
+            code="side_effect_operation_timeout",
+            safe_message="Side-effect operation timed out",
+        ),
+    ),
+    (
+        UnknownOperationTimeoutError,
+        FailureDescriptor(
+            domain=FailureDomain.WORKFLOW,
+            category=FailureCategory.AMBIGUOUS_SIDE_EFFECT,
+            code="unknown_operation_timeout",
+            safe_message="Operation timed out",
+        ),
+    ),
     (
         SideEffectReplayBlockedError,
         FailureDescriptor(

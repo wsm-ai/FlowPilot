@@ -17,6 +17,10 @@ from app.reliability.side_effects import (
     SideEffectReplayBlockedError,
     digest_arguments,
 )
+from app.reliability.timeouts import (
+    SideEffectOperationTimeoutError,
+    TimeoutPolicy,
+)
 from app.schemas.planning import ExecutionPlan, PlanStep
 from app.tools.registry import ToolRegistry
 
@@ -25,6 +29,68 @@ async def initialized_executor(tmp_path):
     repository = SQLiteSideEffectExecutionRepository(tmp_path / "ledger.sqlite")
     await repository.initialize()
     return repository, SideEffectExecutor(repository)
+
+
+def test_side_effect_timeout_marks_ambiguous_and_blocks_replay(tmp_path):
+    async def scenario():
+        repository = SQLiteSideEffectExecutionRepository(tmp_path / "timeout.sqlite")
+        await repository.initialize()
+        executor = SideEffectExecutor(
+            repository, timeout_policy=TimeoutPolicy(0.01)
+        )
+        calls = 0
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            record = await repository.get("run-timeout", 1, "create_issue")
+            assert record.status is SideEffectExecutionStatus.STARTED
+            await asyncio.sleep(1)
+
+        kwargs = dict(
+            run_id="run-timeout", step_id=1, action="create_issue",
+            arguments={"title": "A"}, operation=operation,
+        )
+        with pytest.raises(SideEffectOperationTimeoutError):
+            await executor.execute(**kwargs)
+        record = await repository.get("run-timeout", 1, "create_issue")
+        with pytest.raises(SideEffectReplayBlockedError):
+            await executor.execute(**kwargs)
+        return calls, record
+
+    calls, record = asyncio.run(scenario())
+    assert calls == 1
+    assert record.status is SideEffectExecutionStatus.AMBIGUOUS
+
+
+def test_side_effect_finishing_before_timeout_completes_and_replays(tmp_path):
+    async def scenario():
+        repository = SQLiteSideEffectExecutionRepository(tmp_path / "success.sqlite")
+        await repository.initialize()
+        executor = SideEffectExecutor(
+            repository, timeout_policy=TimeoutPolicy(1)
+        )
+        calls = 0
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            return {"issue_id": 123}
+
+        kwargs = dict(
+            run_id="run-success", step_id=1, action="create_issue",
+            arguments={}, operation=operation,
+        )
+        first = await executor.execute(**kwargs)
+        second = await executor.execute(**kwargs)
+        return calls, first, second, await repository.get(
+            "run-success", 1, "create_issue"
+        )
+
+    calls, first, second, record = asyncio.run(scenario())
+    assert calls == 1
+    assert first == second == {"issue_id": 123}
+    assert record.status is SideEffectExecutionStatus.COMPLETED
 
 
 def test_first_execution_is_reserved_then_completed(tmp_path):
@@ -183,6 +249,54 @@ def test_cancellation_is_propagated_and_blocks_later_replay(tmp_path):
     calls, record = asyncio.run(scenario())
     assert calls == 1
     assert record.status is SideEffectExecutionStatus.AMBIGUOUS
+
+
+def test_cancellation_during_ambiguous_cleanup_is_not_swallowed(tmp_path):
+    async def scenario():
+        repository = SQLiteSideEffectExecutionRepository(
+            tmp_path / "cleanup-cancel.sqlite"
+        )
+        await repository.initialize()
+        cleanup_started = asyncio.Event()
+
+        class BlockingCleanupRepository:
+            reserve_started = repository.reserve_started
+            get = repository.get
+            mark_completed = repository.mark_completed
+
+            async def mark_ambiguous(self, **kwargs):
+                cleanup_started.set()
+                await asyncio.Event().wait()
+
+        executor = SideEffectExecutor(BlockingCleanupRepository())
+        calls = 0
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("operation failed")
+
+        kwargs = dict(
+            run_id="run-cleanup-cancel",
+            step_id=1,
+            action="create_issue",
+            arguments={},
+            operation=operation,
+        )
+        task = asyncio.create_task(executor.execute(**kwargs))
+        await cleanup_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(SideEffectReplayBlockedError):
+            await executor.execute(**kwargs)
+        return calls, await repository.get(
+            "run-cleanup-cancel", 1, "create_issue"
+        )
+
+    calls, record = asyncio.run(scenario())
+    assert calls == 1
+    assert record.status is SideEffectExecutionStatus.STARTED
 
 
 def test_reservation_failure_prevents_remote_dispatch():

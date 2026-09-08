@@ -7,6 +7,8 @@ import hashlib
 import json
 from typing import Any, Protocol, TypeVar
 
+from app.reliability.timeouts import TimeoutPolicy, run_with_timeout
+
 
 class SideEffectExecutionStatus(StrEnum):
     STARTED = "started"
@@ -102,8 +104,14 @@ T = TypeVar("T")
 class SideEffectExecutor:
     """Provides local at-most-once dispatch protection for side effects."""
 
-    def __init__(self, repository: SideEffectExecutionRepository) -> None:
+    def __init__(
+        self,
+        repository: SideEffectExecutionRepository,
+        *,
+        timeout_policy: TimeoutPolicy = TimeoutPolicy(),
+    ) -> None:
         self._repository = repository
+        self._timeout_policy = timeout_policy
 
     async def execute(
         self,
@@ -134,7 +142,13 @@ class SideEffectExecutor:
             )
 
         try:
-            result = await operation()
+            from app.reliability.retry import OperationSemantics
+
+            result = await run_with_timeout(
+                operation,
+                semantics=OperationSemantics.SIDE_EFFECTING,
+                policy=self._timeout_policy,
+            )
         except asyncio.CancelledError:
             await self._mark_ambiguous_best_effort(
                 run_id, step_id, action, arguments_digest
@@ -169,7 +183,5 @@ class SideEffectExecutor:
                 action=action,
                 arguments_digest=arguments_digest,
             )
-        except asyncio.CancelledError:
-            pass
         except Exception:
             pass
