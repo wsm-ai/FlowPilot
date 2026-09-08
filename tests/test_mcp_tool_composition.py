@@ -43,8 +43,10 @@ class FakeMCPClient:
         self.discovery_error = discovery_error
         self.result = result or MCPToolResult(structured_content={"ok": True})
         self.call_tool_calls = []
+        self.list_tools_call_count = 0
 
     async def list_tools(self):
+        self.list_tools_call_count += 1
         if self.discovery_error is not None:
             raise self.discovery_error
         return self.tools
@@ -196,6 +198,9 @@ def test_duplicate_server_id_is_rejected_atomically():
 
 def test_discovery_failure_does_not_partially_register():
     registry = ToolRegistry()
+    failing_client = FakeMCPClient(
+        [], discovery_error=MCPDiscoveryError("unavailable")
+    )
     with pytest.raises(MCPDiscoveryError, match="unavailable"):
         asyncio.run(
             compose_mcp_tools(
@@ -206,14 +211,36 @@ def test_discovery_failure_does_not_partially_register():
                     ),
                     MCPServerClientBinding(
                         "linear",
-                        FakeMCPClient(
-                            [], discovery_error=MCPDiscoveryError("unavailable")
-                        ),
+                        failing_client,
                     ),
                 ],
             )
         )
     assert registry.definitions() == []
+    assert failing_client.list_tools_call_count == 2
+
+
+def test_discovery_transient_failure_retries_once_then_registers():
+    class RecoveringClient(FakeMCPClient):
+        async def list_tools(self):
+            self.list_tools_call_count += 1
+            if self.list_tools_call_count == 1:
+                raise MCPDiscoveryError("temporarily unavailable")
+            return self.tools
+
+    registry = ToolRegistry()
+    client = RecoveringClient([remote_tool("search")])
+
+    composition = asyncio.run(
+        compose_mcp_tools(
+            registry,
+            [MCPServerClientBinding("github", client)],
+        )
+    )
+
+    assert client.list_tools_call_count == 2
+    assert composition.local_names == ("mcp_github_search",)
+    assert registry.contains("mcp_github_search")
 
 
 def test_unexpected_discovery_error_is_not_wrapped():

@@ -4,10 +4,16 @@ import re
 from app.mcp.client import MCPClient, MCPToolRegistrationError
 from app.mcp.naming import is_valid_server_id
 from app.mcp.tool_adapter import MCPToolAdapter
+from app.reliability.retry import (
+    OperationSemantics,
+    RetryPolicy,
+    run_with_retry,
+)
 from app.tools.registry import ToolRegistry
 
 
 _REMOTE_NAME_SEPARATOR = re.compile(r"[^a-z0-9]+")
+_DISCOVERY_RETRY_POLICY = RetryPolicy(max_attempts=2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +51,11 @@ async def compose_mcp_tools(
 
     discovered = []
     for binding in bindings:
-        remote_tools = await binding.client.list_tools()
+        remote_tools = await run_with_retry(
+            binding.client.list_tools,
+            semantics=OperationSemantics.READ_ONLY,
+            policy=_DISCOVERY_RETRY_POLICY,
+        )
         discovered.append((binding, remote_tools))
 
     adapters: list[MCPToolAdapter] = []

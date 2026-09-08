@@ -255,7 +255,7 @@ def test_second_discovery_page_timeout_does_not_partially_register(monkeypatch):
 
     definitions, calls = asyncio.run(scenario())
     assert definitions == []
-    assert calls == [None, "page-2"]
+    assert calls == [None, "page-2", None, "page-2"]
 
 
 def test_real_slow_tool_times_out_without_retry():
