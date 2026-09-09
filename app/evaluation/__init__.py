@@ -10,6 +10,7 @@ from app.evaluation.models import (
     summarize,
 )
 from app.evaluation.runner import EvaluationRunner
+from app.evaluation.scenarios import build_default_evaluation_cases
 
 __all__ = [
     "EvaluationCase",
@@ -22,4 +23,5 @@ __all__ = [
     "EvaluationStatus",
     "EvaluationSummary",
     "summarize",
+    "build_default_evaluation_cases",
 ]

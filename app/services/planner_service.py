@@ -58,6 +58,10 @@ class PlanningError(Exception):
     """Raised when an LLM-generated execution plan is invalid."""
 
 
+class UnavailablePlanActionError(PlanningError):
+    """Raised when a plan selects an action absent from the tool catalog."""
+
+
 class PlannerService:
     def __init__(
         self,
@@ -108,7 +112,7 @@ class PlannerService:
         if self._allowed_actions is not None and any(
             step.action not in self._allowed_actions for step in plan.steps
         ):
-            raise PlanningError("Plan contains unavailable action")
+            raise UnavailablePlanActionError("Plan contains unavailable action")
 
         for step in plan.steps:
             if step.action in READ_ONLY_ACTIONS:
