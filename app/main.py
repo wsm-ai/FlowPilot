@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api.agent import router as agent_router
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
+from app.api.errors import register_api_exception_handlers
 from app.core.config import get_settings
 from app.mcp.application import compose_configured_mcp_tools
 from app.mcp.server import (
@@ -85,6 +86,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+register_api_exception_handlers(app)
 
 
 app.include_router(health_router)

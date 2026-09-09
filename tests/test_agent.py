@@ -133,9 +133,14 @@ def test_agent_hides_provider_error(client: TestClient):
 
     response = client.post("/api/v1/agent/run", json={"message": "Hello"})
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert response.json() == {
-        "detail": "The language model service is unavailable"
+        "error": {
+            "code": "provider_failure",
+            "message": "Language model provider failure",
+            "category": "transient",
+            "domain": "provider",
+        }
     }
     assert "sensitive provider error" not in response.text
 
@@ -150,7 +155,14 @@ def test_agent_hides_tool_error(client: TestClient):
     response = client.post("/api/v1/agent/run", json={"message": "Hello"})
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "Tool execution failed"}
+    assert response.json() == {
+        "error": {
+            "code": "tool_execution_failure",
+            "message": "Tool execution failed",
+            "category": "permanent",
+            "domain": "tool",
+        }
+    }
     assert "sensitive tool error" not in response.text
 
 
@@ -165,6 +177,13 @@ def test_agent_hides_persistence_error(client: TestClient):
 
     response = client.post("/api/v1/agent/run", json={"message": "Hello"})
 
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Agent persistence failed"}
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "persistence_failure",
+            "message": "Persistence operation failed",
+            "category": "transient",
+            "domain": "persistence",
+        }
+    }
     assert "sensitive sqlite error" not in response.text

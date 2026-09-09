@@ -236,7 +236,8 @@ def test_optional_unavailable_mcp_server_allows_degraded_app_startup(
     )
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
 
-    with TestClient(main_module.app):
+    with TestClient(main_module.app) as client:
+        health_response = client.get("/health")
         names = {
             item["function"]["name"]
             for item in main_module.app.state.tool_registry.definitions()
@@ -244,6 +245,7 @@ def test_optional_unavailable_mcp_server_allows_degraded_app_startup(
         degradations = main_module.app.state.mcp_degradations
 
     assert names == {"get_customer_feedback", "search_knowledge_base"}
+    assert health_response.status_code == 200
     assert main_module.app.state.mcp_approval_required_actions == frozenset()
     assert len(degradations) == 1
     assert degradations[0].component == "optional"
