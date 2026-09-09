@@ -7,6 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.mcp.client import (
     MCPConnectionError,
+    MCPConnectionConfigurationError,
+    MCPPermanentConnectionError,
+    MCPTransientConnectionError,
 )
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.sdk_client import (
@@ -61,7 +64,9 @@ class StdioMCPClient:
 
     async def __aenter__(self) -> "StdioMCPClient":
         if self._client is not None:
-            raise MCPConnectionError("MCP client is already connected")
+            raise MCPConnectionConfigurationError(
+                "MCP client is already connected"
+            )
         parameters = StdioServerParameters(
             command=self._config.command,
             args=list(self._config.args),
@@ -75,15 +80,25 @@ class StdioMCPClient:
         try:
             await sdk_client.__aenter__()
         except TimeoutError as exc:
-            raise MCPConnectionError("MCP stdio connection timed out") from exc
+            raise MCPTransientConnectionError(
+                "MCP stdio connection timed out"
+            ) from exc
+        except (FileNotFoundError, PermissionError) as exc:
+            raise MCPConnectionConfigurationError(
+                "MCP stdio connection configuration failed"
+            ) from exc
         except SDKMCPError as exc:
             if is_sdk_timeout(exc):
-                raise MCPConnectionError(
+                raise MCPTransientConnectionError(
                     "MCP stdio connection timed out"
                 ) from exc
-            raise MCPConnectionError("MCP stdio connection failed") from exc
+            raise MCPPermanentConnectionError(
+                "MCP stdio connection failed"
+            ) from exc
         except TRANSPORT_ERRORS as exc:
-            raise MCPConnectionError("MCP stdio connection failed") from exc
+            raise MCPTransientConnectionError(
+                "MCP stdio connection failed"
+            ) from exc
         self._client = sdk_client
         return self
 
@@ -105,5 +120,7 @@ class StdioMCPClient:
 
     def _connected_client(self) -> Client:
         if self._client is None:
-            raise MCPConnectionError("MCP client is not connected")
+            raise MCPConnectionConfigurationError(
+                "MCP client is not connected"
+            )
         return self._client

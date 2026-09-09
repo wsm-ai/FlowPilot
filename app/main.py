@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
         app.state.mcp_approval_required_actions = (
             mcp_composition.approval_required_actions
         )
+        app.state.mcp_degradations = mcp_composition.degradations
         export_registry = create_mcp_export_registry(
             registry,
             mcp_composition.approval_required_actions,

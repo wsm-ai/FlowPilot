@@ -20,7 +20,13 @@ from app.api.dependencies import (
 )
 from app.core.config import Settings
 from app.mcp.application import compose_configured_mcp_tools
-from app.mcp.client import MCPConnectionError
+from app.mcp.client import (
+    MCPAuthenticationError,
+    MCPConnectionConfigurationError,
+    MCPConnectionError,
+    MCPPermanentConnectionError,
+    MCPTransientConnectionError,
+)
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.tools.registry import ToolRegistry
 
@@ -91,7 +97,7 @@ class LifecycleClient:
 
 
 def config(server_id):
-    return SimpleNamespace(server_id=server_id)
+    return SimpleNamespace(server_id=server_id, required=True)
 
 
 def test_multiple_transport_clients_share_registry_and_close_in_reverse_order(
@@ -200,3 +206,82 @@ def test_production_lifespan_composes_http_tools_and_planner_policy(monkeypatch)
     }
     assert policy == {"mcp_test_add_numbers", "mcp_test_echo_text"}
     assert service._planner_service._approval_required_actions == policy
+
+
+def test_optional_unavailable_mcp_server_allows_degraded_app_startup(
+    monkeypatch,
+):
+    events = []
+    unavailable = LifecycleClient(
+        "optional",
+        events,
+        enter_error=MCPTransientConnectionError("TOKEN=private endpoint"),
+    )
+    monkeypatch.setattr(
+        application_module,
+        "create_configured_mcp_client",
+        lambda config: unavailable,
+    )
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="test-key",
+        mcp_servers=[
+            {
+                "server_id": "optional",
+                "transport": "stdio",
+                "command": "unused",
+                "required": False,
+            }
+        ],
+    )
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+
+    with TestClient(main_module.app):
+        names = {
+            item["function"]["name"]
+            for item in main_module.app.state.tool_registry.definitions()
+        }
+        degradations = main_module.app.state.mcp_degradations
+
+    assert names == {"get_customer_feedback", "search_knowledge_base"}
+    assert main_module.app.state.mcp_approval_required_actions == frozenset()
+    assert len(degradations) == 1
+    assert degradations[0].component == "optional"
+    assert degradations[0].safe_message == (
+        "MCP connection temporarily unavailable"
+    )
+    assert "private" not in repr(degradations[0])
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        MCPAuthenticationError("TOKEN=private"),
+        MCPConnectionConfigurationError("command=private"),
+        MCPPermanentConnectionError("response=private"),
+        MCPConnectionError("unknown=private"),
+    ],
+)
+def test_optional_non_transient_connection_failure_is_fail_closed(
+    monkeypatch, error
+):
+    client = LifecycleClient("optional", [], enter_error=error)
+    monkeypatch.setattr(
+        application_module,
+        "create_configured_mcp_client",
+        lambda item: client,
+    )
+    registry = ToolRegistry()
+    optional_config = SimpleNamespace(server_id="optional", required=False)
+
+    async def scenario():
+        async with AsyncExitStack() as stack:
+            with pytest.raises(type(error)) as raised:
+                await compose_configured_mcp_tools(
+                    registry, [optional_config], stack
+                )
+            return raised.value
+
+    raised = asyncio.run(scenario())
+    assert raised is error
+    assert registry.definitions() == []

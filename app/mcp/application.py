@@ -3,7 +3,7 @@ import os
 
 from pydantic import SecretStr
 
-from app.mcp.client import MCPClient, MCPConnectionError
+from app.mcp.client import MCPAuthenticationError, MCPClient
 from app.mcp.config import (
     MCPConfiguredStdioServerConfig,
     MCPHTTPServerConfig,
@@ -16,6 +16,12 @@ from app.mcp.tool_composition import (
     MCPToolComposition,
     compose_mcp_tools,
 )
+from app.reliability.degradation import (
+    DegradationRecord,
+    decide_degradation,
+)
+from app.reliability.failures import classify_failure
+from app.reliability.retry import OperationSemantics
 from app.tools.registry import ToolRegistry
 
 
@@ -35,7 +41,7 @@ def create_configured_mcp_client(config: MCPServerConfig) -> MCPClient:
     if config.bearer_token_env is not None:
         raw_token = os.environ.get(config.bearer_token_env)
         if raw_token is None or not raw_token.strip():
-            raise MCPConnectionError(
+            raise MCPAuthenticationError(
                 "MCP authentication secret is not configured"
             )
         token = SecretStr(raw_token)
@@ -48,8 +54,35 @@ async def compose_configured_mcp_tools(
     exit_stack: AsyncExitStack,
 ) -> MCPToolComposition:
     bindings: list[MCPServerClientBinding] = []
+    degradations: list[DegradationRecord] = []
     for config in configs:
         client = create_configured_mcp_client(config)
-        connected = await exit_stack.enter_async_context(client)
-        bindings.append(MCPServerClientBinding(config.server_id, connected))
-    return await compose_mcp_tools(registry, bindings)
+        try:
+            connected = await exit_stack.enter_async_context(client)
+        except Exception as exc:
+            failure = classify_failure(exc)
+            decision = decide_degradation(
+                failure,
+                OperationSemantics.READ_ONLY,
+                optional=not config.required,
+            )
+            if not decision.allowed:
+                raise
+            degradations.append(
+                DegradationRecord.from_failure(config.server_id, failure)
+            )
+            continue
+        bindings.append(
+            MCPServerClientBinding(
+                config.server_id,
+                connected,
+                required=config.required,
+            )
+        )
+    composition = await compose_mcp_tools(registry, bindings)
+    return MCPToolComposition(
+        tools=composition.tools,
+        local_names=composition.local_names,
+        approval_required_actions=composition.approval_required_actions,
+        degradations=tuple(degradations) + composition.degradations,
+    )

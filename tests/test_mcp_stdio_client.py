@@ -81,7 +81,7 @@ def test_connection_failure_uses_safe_error_message():
         return raised.value
 
     error = asyncio.run(scenario())
-    assert str(error) == "MCP stdio connection failed"
+    assert str(error) == "MCP stdio connection configuration failed"
     assert command not in str(error)
 
 

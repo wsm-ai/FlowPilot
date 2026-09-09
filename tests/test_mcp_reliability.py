@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import sys
 
 import pytest
+import httpx2
 from mcp import MCPError as SDKMCPError
 from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import ValidationError
@@ -13,7 +14,13 @@ from pydantic import ValidationError
 import app.mcp.stdio_client as stdio_module
 from app.mcp.client import (
     MCPConnectionError,
+    MCPConnectionConfigurationError,
     MCPDiscoveryError,
+    MCPDiscoveryValidationError,
+    MCPAuthenticationError,
+    MCPPermanentDiscoveryError,
+    MCPPermanentConnectionError,
+    MCPTransientConnectionError,
     MCPToolCallError,
 )
 from app.mcp.models import MCPToolResult
@@ -152,8 +159,43 @@ def test_connection_timeout_maps_to_safe_error(monkeypatch):
         return raised.value
 
     error = asyncio.run(scenario())
+    assert isinstance(error, MCPTransientConnectionError)
     assert str(error) == "MCP stdio connection timed out"
     assert "secret" not in str(error)
+
+
+def test_generic_sdk_connection_error_is_permanent_and_safe(monkeypatch):
+    FakeSDKClient.enter_error = SDKMCPError(
+        -32099, "TOKEN=secret protocol response"
+    )
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def scenario():
+        with pytest.raises(MCPPermanentConnectionError) as raised:
+            async with StdioMCPClient(server_config()):
+                pass
+        return raised.value
+
+    error = asyncio.run(scenario())
+    assert str(error) == "MCP stdio connection failed"
+    assert "secret" not in str(error)
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(), PermissionError()])
+def test_stdio_local_setup_errors_are_configuration_failures(
+    monkeypatch, error
+):
+    FakeSDKClient.enter_error = error
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def scenario():
+        with pytest.raises(MCPConnectionConfigurationError) as raised:
+            async with StdioMCPClient(server_config()):
+                pass
+        return raised.value
+
+    mapped = asyncio.run(scenario())
+    assert str(mapped) == "MCP stdio connection configuration failed"
 
 
 def test_list_tools_timeout_is_safe_and_not_retried(monkeypatch):
@@ -172,6 +214,148 @@ def test_list_tools_timeout_is_safe_and_not_retried(monkeypatch):
     assert str(error) == "MCP tool discovery timed out"
     assert "sensitive" not in str(error)
     assert calls == [None]
+
+
+def test_generic_sdk_discovery_error_is_permanent_and_not_retried(monkeypatch):
+    FakeSDKClient.list_error_by_cursor = {
+        None: SDKMCPError(-32099, "TOKEN=private protocol data")
+    }
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def captured_scenario():
+        registry = ToolRegistry()
+        async with StdioMCPClient(server_config()) as client:
+            sdk_client = client._client
+            with pytest.raises(MCPPermanentDiscoveryError) as raised:
+                await compose_mcp_tools(
+                    registry,
+                    [MCPServerClientBinding("test", client, required=False)],
+                )
+            return raised.value, registry.definitions(), sdk_client.list_calls
+
+    error, definitions, calls = asyncio.run(captured_scenario())
+    assert calls == [None]
+    assert definitions == []
+    assert "private" not in str(error)
+
+
+def test_malformed_discovery_is_validation_failure_without_retry(monkeypatch):
+    FakeSDKClient.pages = {
+        None: SimpleNamespace(tools=[object()], next_cursor=None)
+    }
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def scenario():
+        async with StdioMCPClient(server_config()) as client:
+            sdk_client = client._client
+            with pytest.raises(MCPDiscoveryValidationError):
+                await compose_mcp_tools(
+                    ToolRegistry(),
+                    [MCPServerClientBinding("test", client, required=False)],
+                )
+            return sdk_client.list_calls
+
+    assert asyncio.run(scenario()) == [None]
+
+
+def test_duplicate_remote_name_is_validation_failure_without_retry(monkeypatch):
+    FakeSDKClient.pages = {
+        None: SimpleNamespace(
+            tools=[sdk_tool("duplicate"), sdk_tool("duplicate")],
+            next_cursor=None,
+        )
+    }
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def scenario():
+        registry = ToolRegistry()
+        async with StdioMCPClient(server_config()) as client:
+            sdk_client = client._client
+            with pytest.raises(MCPDiscoveryValidationError):
+                await compose_mcp_tools(
+                    registry,
+                    [MCPServerClientBinding("test", client, required=False)],
+                )
+            return sdk_client.list_calls, registry.definitions()
+
+    calls, definitions = asyncio.run(scenario())
+    assert calls == [None]
+    assert definitions == []
+
+
+def test_repeated_pagination_cursor_is_validation_failure_without_retry(
+    monkeypatch,
+):
+    FakeSDKClient.pages = {
+        None: SimpleNamespace(
+            tools=[sdk_tool("page_one")], next_cursor="page-2"
+        ),
+        "page-2": SimpleNamespace(
+            tools=[sdk_tool("page_two")], next_cursor="page-2"
+        ),
+    }
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def scenario():
+        registry = ToolRegistry()
+        async with StdioMCPClient(server_config()) as client:
+            sdk_client = client._client
+            with pytest.raises(MCPDiscoveryValidationError):
+                await compose_mcp_tools(
+                    registry,
+                    [MCPServerClientBinding("test", client, required=False)],
+                )
+            return sdk_client.list_calls, registry.definitions()
+
+    calls, definitions = asyncio.run(scenario())
+    assert calls == [None, "page-2"]
+    assert definitions == []
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type", "expected_calls"),
+    [
+        (401, MCPAuthenticationError, 1),
+        (403, MCPAuthenticationError, 1),
+        (408, MCPDiscoveryError, 2),
+        (429, MCPDiscoveryError, 2),
+        (503, MCPDiscoveryError, 2),
+        (400, MCPPermanentDiscoveryError, 1),
+    ],
+)
+def test_structured_discovery_http_status_controls_retry(
+    monkeypatch, status, error_type, expected_calls
+):
+    request = httpx2.Request("GET", "https://example.com/mcp")
+    response = httpx2.Response(status, request=request)
+    FakeSDKClient.list_error_by_cursor = {
+        None: httpx2.HTTPStatusError(
+            "TOKEN=private body", request=request, response=response
+        )
+    }
+    monkeypatch.setattr(stdio_module, "Client", FakeSDKClient)
+
+    async def scenario():
+        registry = ToolRegistry()
+        async with StdioMCPClient(server_config()) as client:
+            sdk_client = client._client
+            if status in {408, 429, 503}:
+                composition = await compose_mcp_tools(
+                    registry,
+                    [MCPServerClientBinding("test", client, required=False)],
+                )
+                assert len(composition.degradations) == 1
+            else:
+                with pytest.raises(error_type):
+                    await compose_mcp_tools(
+                        registry,
+                        [MCPServerClientBinding("test", client, required=False)],
+                    )
+            return sdk_client.list_calls, registry.definitions()
+
+    calls, definitions = asyncio.run(scenario())
+    assert len(calls) == expected_calls
+    assert definitions == []
 
 
 def test_call_tool_timeout_is_safe_and_not_retried(monkeypatch):

@@ -5,7 +5,11 @@ import sys
 
 import pytest
 
-from app.mcp.client import MCPDiscoveryError, MCPToolRegistrationError
+from app.mcp.client import (
+    MCPDiscoveryError,
+    MCPToolRegistrationError,
+    MCPTransientDiscoveryError,
+)
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.stdio_client import MCPStdioServerConfig, StdioMCPClient
 from app.mcp.tool_adapter import MCPToolAdapter
@@ -208,7 +212,7 @@ def test_duplicate_server_id_is_rejected_atomically():
 def test_discovery_failure_does_not_partially_register():
     registry = ToolRegistry()
     failing_client = FakeMCPClient(
-        [], discovery_error=MCPDiscoveryError("unavailable")
+        [], discovery_error=MCPTransientDiscoveryError("unavailable")
     )
     with pytest.raises(MCPDiscoveryError, match="unavailable"):
         asyncio.run(
@@ -234,7 +238,7 @@ def test_discovery_transient_failure_retries_once_then_registers():
         async def list_tools(self):
             self.list_tools_call_count += 1
             if self.list_tools_call_count == 1:
-                raise MCPDiscoveryError("temporarily unavailable")
+                raise MCPTransientDiscoveryError("temporarily unavailable")
             return self.tools
 
     registry = ToolRegistry()
@@ -250,6 +254,139 @@ def test_discovery_transient_failure_retries_once_then_registers():
     assert client.list_tools_call_count == 2
     assert composition.local_names == ("mcp_github_search",)
     assert registry.contains("mcp_github_search")
+
+
+def test_optional_persistent_transient_failure_degrades_after_retry():
+    registry = ToolRegistry()
+    client = FakeMCPClient(
+        [remote_tool("search")],
+        discovery_error=MCPTransientDiscoveryError("TOKEN=private"),
+    )
+
+    composition = asyncio.run(
+        compose_mcp_tools(
+            registry,
+            [MCPServerClientBinding("github", client, required=False)],
+        )
+    )
+
+    assert client.list_tools_call_count == 2
+    assert composition.tools == ()
+    assert composition.local_names == ()
+    assert composition.approval_required_actions == frozenset()
+    assert len(composition.degradations) == 1
+    record = composition.degradations[0]
+    assert record.component == "github"
+    assert record.safe_message == (
+        "MCP tool discovery temporarily unavailable"
+    )
+    assert "private" not in repr(record)
+    assert registry.definitions() == []
+
+
+def test_optional_transient_failure_then_success_does_not_degrade():
+    class RecoveringClient(FakeMCPClient):
+        async def list_tools(self):
+            self.list_tools_call_count += 1
+            if self.list_tools_call_count == 1:
+                raise MCPTransientDiscoveryError("temporary")
+            return self.tools
+
+    registry = ToolRegistry()
+    client = RecoveringClient([remote_tool("search")])
+    composition = asyncio.run(
+        compose_mcp_tools(
+            registry,
+            [MCPServerClientBinding("github", client, required=False)],
+        )
+    )
+    assert client.list_tools_call_count == 2
+    assert composition.local_names == ("mcp_github_search",)
+    assert composition.degradations == ()
+
+
+def test_optional_failure_and_required_success_registers_only_success():
+    optional = FakeMCPClient(
+        [remote_tool("partial")],
+        discovery_error=MCPTransientDiscoveryError("temporary"),
+    )
+    required = FakeMCPClient([remote_tool("search")])
+    registry = ToolRegistry()
+    composition = asyncio.run(
+        compose_mcp_tools(
+            registry,
+            [
+                MCPServerClientBinding("optional", optional, required=False),
+                MCPServerClientBinding("required", required),
+            ],
+        )
+    )
+    assert composition.local_names == ("mcp_required_search",)
+    assert composition.approval_required_actions == {
+        "mcp_required_search"
+    }
+    assert not registry.contains("mcp_optional_partial")
+    assert len(composition.degradations) == 1
+
+
+def test_optional_registration_error_still_fails_closed():
+    client = FakeMCPClient(
+        [], discovery_error=MCPToolRegistrationError("bad configuration")
+    )
+    registry = ToolRegistry()
+    with pytest.raises(MCPToolRegistrationError):
+        asyncio.run(
+            compose_mcp_tools(
+                registry,
+                [MCPServerClientBinding("github", client, required=False)],
+            )
+        )
+    assert registry.definitions() == []
+
+
+def test_optional_page_failure_discards_all_server_tools():
+    class AtomicPaginatedClient(FakeMCPClient):
+        async def list_tools(self):
+            self.list_tools_call_count += 1
+            self.page_one = [remote_tool("page_one")]
+            raise MCPTransientDiscoveryError("page two timed out")
+
+    client = AtomicPaginatedClient([])
+    registry = ToolRegistry()
+    composition = asyncio.run(
+        compose_mcp_tools(
+            registry,
+            [MCPServerClientBinding("docs", client, required=False)],
+        )
+    )
+    assert client.list_tools_call_count == 2
+    assert composition.tools == ()
+    assert not registry.contains("mcp_docs_page_one")
+
+
+def test_optional_discovery_cancellation_propagates():
+    async def scenario():
+        started = asyncio.Event()
+
+        class WaitingClient(FakeMCPClient):
+            async def list_tools(self):
+                self.list_tools_call_count += 1
+                started.set()
+                await asyncio.Event().wait()
+
+        client = WaitingClient([])
+        task = asyncio.create_task(
+            compose_mcp_tools(
+                ToolRegistry(),
+                [MCPServerClientBinding("docs", client, required=False)],
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
 
 
 def test_unexpected_discovery_error_is_not_wrapped():

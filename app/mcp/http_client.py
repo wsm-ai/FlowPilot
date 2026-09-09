@@ -6,7 +6,12 @@ from mcp import Client, MCPError as SDKMCPError
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import SecretStr
 
-from app.mcp.client import MCPConnectionError
+from app.mcp.client import (
+    MCPAuthenticationError,
+    MCPConnectionConfigurationError,
+    MCPPermanentConnectionError,
+    MCPTransientConnectionError,
+)
 from app.mcp.config import MCPHTTPServerConfig
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.sdk_client import (
@@ -31,7 +36,9 @@ class StreamableHTTPMCPClient:
 
     async def __aenter__(self) -> "StreamableHTTPMCPClient":
         if self._client is not None:
-            raise MCPConnectionError("MCP client is already connected")
+            raise MCPConnectionConfigurationError(
+                "MCP client is already connected"
+            )
 
         stack = AsyncExitStack()
         try:
@@ -60,17 +67,37 @@ class StreamableHTTPMCPClient:
             await stack.enter_async_context(sdk_client)
         except (TimeoutError, httpx2.TimeoutException) as exc:
             await stack.aclose()
-            raise MCPConnectionError("MCP HTTP connection timed out") from exc
+            raise MCPTransientConnectionError(
+                "MCP HTTP connection timed out"
+            ) from exc
+        except httpx2.HTTPStatusError as exc:
+            await stack.aclose()
+            status = exc.response.status_code
+            if status in {401, 403}:
+                raise MCPAuthenticationError(
+                    "MCP authentication configuration failed"
+                ) from exc
+            if status in {408, 429} or status >= 500:
+                raise MCPTransientConnectionError(
+                    "MCP HTTP connection failed"
+                ) from exc
+            raise MCPPermanentConnectionError(
+                "MCP HTTP protocol connection failed"
+            ) from exc
         except SDKMCPError as exc:
             await stack.aclose()
             if is_sdk_timeout(exc):
-                raise MCPConnectionError(
+                raise MCPTransientConnectionError(
                     "MCP HTTP connection timed out"
                 ) from exc
-            raise MCPConnectionError("MCP HTTP connection failed") from exc
+            raise MCPPermanentConnectionError(
+                "MCP HTTP protocol connection failed"
+            ) from exc
         except TRANSPORT_ERRORS as exc:
             await stack.aclose()
-            raise MCPConnectionError("MCP HTTP connection failed") from exc
+            raise MCPTransientConnectionError(
+                "MCP HTTP connection failed"
+            ) from exc
 
         self._client = sdk_client
         self._exit_stack = stack
@@ -95,5 +122,7 @@ class StreamableHTTPMCPClient:
 
     def _connected_client(self) -> Client:
         if self._client is None:
-            raise MCPConnectionError("MCP client is not connected")
+            raise MCPConnectionConfigurationError(
+                "MCP client is not connected"
+            )
         return self._client

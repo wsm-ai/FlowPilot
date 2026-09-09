@@ -6,7 +6,14 @@ import httpx2
 from mcp import MCPError as SDKMCPError
 from pydantic import ValidationError
 
-from app.mcp.client import MCPDiscoveryError, MCPToolCallError
+from app.mcp.client import (
+    MCPAuthenticationError,
+    MCPConnectionConfigurationError,
+    MCPDiscoveryValidationError,
+    MCPPermanentDiscoveryError,
+    MCPToolCallError,
+    MCPTransientDiscoveryError,
+)
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 
 
@@ -35,15 +42,40 @@ async def discover_tools(client: Any) -> list[MCPRemoteTool]:
         try:
             response = await client.list_tools(cursor=cursor)
         except (TimeoutError, httpx2.TimeoutException) as exc:
-            raise MCPDiscoveryError("MCP tool discovery timed out") from exc
+            raise MCPTransientDiscoveryError(
+                "MCP tool discovery timed out"
+            ) from exc
+        except httpx2.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                raise MCPAuthenticationError(
+                    "MCP authentication configuration failed"
+                ) from exc
+            if status in {408, 429} or status >= 500:
+                raise MCPTransientDiscoveryError(
+                    "MCP tool discovery temporarily unavailable"
+                ) from exc
+            raise MCPPermanentDiscoveryError(
+                "MCP tool discovery failed"
+            ) from exc
+        except (FileNotFoundError, PermissionError) as exc:
+            raise MCPConnectionConfigurationError(
+                "MCP connection configuration failed"
+            ) from exc
         except SDKMCPError as exc:
             if is_sdk_timeout(exc):
-                raise MCPDiscoveryError("MCP tool discovery timed out") from exc
-            raise MCPDiscoveryError("MCP tool discovery failed") from exc
+                raise MCPTransientDiscoveryError(
+                    "MCP tool discovery timed out"
+                ) from exc
+            raise MCPPermanentDiscoveryError(
+                "MCP tool discovery failed"
+            ) from exc
         except TRANSPORT_ERRORS as exc:
-            raise MCPDiscoveryError("MCP tool discovery failed") from exc
+            raise MCPTransientDiscoveryError(
+                "MCP tool discovery temporarily unavailable"
+            ) from exc
         except ValidationError as exc:
-            raise MCPDiscoveryError(
+            raise MCPDiscoveryValidationError(
                 "MCP tool discovery returned invalid data"
             ) from exc
 
@@ -55,7 +87,7 @@ async def discover_tools(client: Any) -> list[MCPRemoteTool]:
                     input_schema=deepcopy(sdk_tool.input_schema),
                 )
                 if remote_tool.name in seen_names:
-                    raise MCPDiscoveryError(
+                    raise MCPDiscoveryValidationError(
                         "MCP tool discovery returned duplicate tool name"
                     )
                 seen_names.add(remote_tool.name)
@@ -67,10 +99,10 @@ async def discover_tools(client: Any) -> list[MCPRemoteTool]:
                 raise ValueError("repeated pagination cursor")
             seen_cursors.add(next_cursor)
             cursor = next_cursor
-        except MCPDiscoveryError:
+        except MCPDiscoveryValidationError:
             raise
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:
-            raise MCPDiscoveryError(
+            raise MCPDiscoveryValidationError(
                 "MCP tool discovery returned invalid data"
             ) from exc
 

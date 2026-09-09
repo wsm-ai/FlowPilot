@@ -1,10 +1,17 @@
 from app.mcp.client import (
     MCPClient,
     MCPConnectionError,
+    MCPAuthenticationError,
+    MCPConnectionConfigurationError,
     MCPDiscoveryError,
+    MCPDiscoveryValidationError,
     MCPError,
     MCPToolCallError,
     MCPToolRegistrationError,
+    MCPPermanentConnectionError,
+    MCPPermanentDiscoveryError,
+    MCPTransientConnectionError,
+    MCPTransientDiscoveryError,
 )
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.config import (
@@ -32,8 +39,11 @@ from app.mcp.tool_composition import (
 __all__ = [
     "MCPClient",
     "MCPConnectionError",
+    "MCPAuthenticationError",
+    "MCPConnectionConfigurationError",
     "MCPConfiguredStdioServerConfig",
     "MCPDiscoveryError",
+    "MCPDiscoveryValidationError",
     "MCPError",
     "MCPRemoteTool",
     "MCPHTTPServerConfig",
@@ -45,6 +55,10 @@ __all__ = [
     "MCPToolComposition",
     "MCPToolRegistrationError",
     "MCPToolResult",
+    "MCPPermanentConnectionError",
+    "MCPPermanentDiscoveryError",
+    "MCPTransientConnectionError",
+    "MCPTransientDiscoveryError",
     "MCPServerClientBinding",
     "MCPStdioServerConfig",
     "StdioMCPClient",

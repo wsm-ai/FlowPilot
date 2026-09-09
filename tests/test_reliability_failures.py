@@ -4,10 +4,17 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from app.mcp.client import (
+    MCPAuthenticationError,
     MCPConnectionError,
+    MCPConnectionConfigurationError,
     MCPDiscoveryError,
+    MCPDiscoveryValidationError,
     MCPToolCallError,
     MCPToolRegistrationError,
+    MCPPermanentConnectionError,
+    MCPPermanentDiscoveryError,
+    MCPTransientConnectionError,
+    MCPTransientDiscoveryError,
 )
 from app.persistence.repository import PersistenceError
 from app.providers.base import LLMProviderError
@@ -46,14 +53,56 @@ from app.tools.base import ToolExecutionError
         (
             MCPConnectionError("private"),
             FailureDomain.MCP,
-            FailureCategory.TRANSIENT,
+            FailureCategory.PERMANENT,
             "mcp_connection_failure",
+        ),
+        (
+            MCPTransientConnectionError("private"),
+            FailureDomain.MCP,
+            FailureCategory.TRANSIENT,
+            "mcp_transient_connection_failure",
+        ),
+        (
+            MCPAuthenticationError("private"),
+            FailureDomain.MCP,
+            FailureCategory.CONFIGURATION,
+            "mcp_authentication_failure",
+        ),
+        (
+            MCPConnectionConfigurationError("private"),
+            FailureDomain.MCP,
+            FailureCategory.CONFIGURATION,
+            "mcp_connection_configuration_failure",
+        ),
+        (
+            MCPPermanentConnectionError("private"),
+            FailureDomain.MCP,
+            FailureCategory.PERMANENT,
+            "mcp_permanent_connection_failure",
         ),
         (
             MCPDiscoveryError("private"),
             FailureDomain.MCP,
-            FailureCategory.TRANSIENT,
+            FailureCategory.PERMANENT,
             "mcp_discovery_failure",
+        ),
+        (
+            MCPTransientDiscoveryError("private"),
+            FailureDomain.MCP,
+            FailureCategory.TRANSIENT,
+            "mcp_transient_discovery_failure",
+        ),
+        (
+            MCPPermanentDiscoveryError("private"),
+            FailureDomain.MCP,
+            FailureCategory.PERMANENT,
+            "mcp_permanent_discovery_failure",
+        ),
+        (
+            MCPDiscoveryValidationError("private"),
+            FailureDomain.MCP,
+            FailureCategory.VALIDATION,
+            "mcp_discovery_validation_failure",
         ),
         (
             MCPToolCallError("private"),

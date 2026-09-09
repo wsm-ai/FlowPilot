@@ -3,6 +3,9 @@ from typing import Any
 
 
 _EXPORT_MODULES = {
+    "DegradationDecision": "app.reliability.degradation",
+    "DegradationRecord": "app.reliability.degradation",
+    "decide_degradation": "app.reliability.degradation",
     "FailureCategory": "app.reliability.failures",
     "FailureDescriptor": "app.reliability.failures",
     "FailureDomain": "app.reliability.failures",

@@ -168,27 +168,97 @@ def classify_failure(
 ) -> FailureDescriptor:
     """Classify an exception without exposing or inspecting its message."""
     from app.mcp.client import (
+        MCPAuthenticationError,
         MCPConnectionError,
+        MCPConnectionConfigurationError,
         MCPDiscoveryError,
+        MCPDiscoveryValidationError,
+        MCPPermanentConnectionError,
+        MCPPermanentDiscoveryError,
+        MCPTransientConnectionError,
+        MCPTransientDiscoveryError,
         MCPToolCallError,
         MCPToolRegistrationError,
     )
 
     mcp_mappings = (
         (
-            MCPConnectionError,
+            MCPTransientConnectionError,
             FailureDescriptor(
                 FailureDomain.MCP,
                 FailureCategory.TRANSIENT,
+                "mcp_transient_connection_failure",
+                "MCP connection temporarily unavailable",
+            ),
+        ),
+        (
+            MCPAuthenticationError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.CONFIGURATION,
+                "mcp_authentication_failure",
+                "MCP authentication configuration failed",
+            ),
+        ),
+        (
+            MCPConnectionConfigurationError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.CONFIGURATION,
+                "mcp_connection_configuration_failure",
+                "MCP connection configuration failed",
+            ),
+        ),
+        (
+            MCPPermanentConnectionError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.PERMANENT,
+                "mcp_permanent_connection_failure",
+                "MCP protocol connection failed",
+            ),
+        ),
+        (
+            MCPConnectionError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.PERMANENT,
                 "mcp_connection_failure",
                 "MCP connection failed",
+            ),
+        ),
+        (
+            MCPTransientDiscoveryError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.TRANSIENT,
+                "mcp_transient_discovery_failure",
+                "MCP tool discovery temporarily unavailable",
+            ),
+        ),
+        (
+            MCPDiscoveryValidationError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.VALIDATION,
+                "mcp_discovery_validation_failure",
+                "MCP tool discovery returned invalid data",
+            ),
+        ),
+        (
+            MCPPermanentDiscoveryError,
+            FailureDescriptor(
+                FailureDomain.MCP,
+                FailureCategory.PERMANENT,
+                "mcp_permanent_discovery_failure",
+                "MCP tool discovery failed",
             ),
         ),
         (
             MCPDiscoveryError,
             FailureDescriptor(
                 FailureDomain.MCP,
-                FailureCategory.TRANSIENT,
+                FailureCategory.PERMANENT,
                 "mcp_discovery_failure",
                 "MCP tool discovery failed",
             ),
