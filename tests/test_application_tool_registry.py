@@ -170,10 +170,12 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
             registry,
             checkpointer,
             grounded_answer_service=None,
+            side_effect_executor=None,
         ):
             captured["planner_service"] = planner_service
             captured["registry"] = registry
             captured["grounded_answer_service"] = grounded_answer_service
+            captured["side_effect_executor"] = side_effect_executor
 
     monkeypatch.setattr(agent_api, "PlannerService", FakePlannerService)
     monkeypatch.setattr(
@@ -188,11 +190,13 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
     )
 
     llm_service = object()
+    side_effect_executor = object()
     agent_api.get_approval_workflow_service(
         llm_service=llm_service,
         checkpointer=object(),
         registry=registry,
         approval_required_actions=frozenset({"mcp_test_action"}),
+        side_effect_executor=side_effect_executor,
     )
 
     assert captured["registry"] is registry
@@ -200,3 +204,4 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
     assert captured["planner_llm"] is llm_service
     assert captured["grounding_llm"] is llm_service
     assert captured["approval_required_actions"] == {"mcp_test_action"}
+    assert captured["side_effect_executor"] is side_effect_executor

@@ -19,6 +19,7 @@ from app.graph.routing import (
     route_plan_step,
 )
 from app.graph.state import AgentState
+from app.reliability.side_effects import SideEffectExecutor
 from app.tools.registry import ToolRegistry
 
 
@@ -37,6 +38,7 @@ def _route_from_approval_decision(state: AgentState) -> ApprovalDecisionRoute:
 def create_approval_graph(
     registry: ToolRegistry,
     checkpointer: BaseCheckpointSaver,
+    side_effect_executor: SideEffectExecutor | None = None,
 ):
     builder = StateGraph(AgentState)
     builder.add_node("router_entry", _record_route)
@@ -45,7 +47,7 @@ def create_approval_graph(
     builder.add_node("approval_node", create_approval_node())
     builder.add_node(
         "approved_execute",
-        create_approved_plan_step_executor(registry),
+        create_approved_plan_step_executor(registry, side_effect_executor),
     )
     builder.add_node("reject_node", create_reject_approval_node())
     builder.add_edge(START, "router_entry")

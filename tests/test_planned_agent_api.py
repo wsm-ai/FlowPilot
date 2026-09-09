@@ -1,6 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.errors import http_status_for_failure, response_for_failure
+from app.reliability.failures import classify_failure
+
 from app.api.agent import get_persistent_approval_workflow_service
 from app.grounding.evidence import EvidenceExtractionError
 from app.grounding.models import Citation, GroundedAnswer
@@ -291,8 +294,11 @@ def test_plan_run_maps_errors_without_leaking_details(
         json={"goal": "Review feedback"},
     )
 
-    assert response.status_code == status_code
-    assert response.json() == {"detail": detail}
+    descriptor = classify_failure(error)
+    assert response.status_code == http_status_for_failure(descriptor)
+    assert response.json() == response_for_failure(descriptor).model_dump(
+        mode="json"
+    )
     assert str(error) not in response.text
 
 
@@ -439,8 +445,15 @@ def test_grounded_answer_retry_maps_errors_without_leaking_details(
         "/api/v1/agent/answer/retry",
         json={"run_id": "run-123", "thread_id": "approval-thread"},
     )
-    assert response.status_code == status_code
-    assert response.json() == {"detail": detail}
+    if isinstance(error, PersistenceError):
+        descriptor = classify_failure(error)
+        assert response.status_code == http_status_for_failure(descriptor)
+        assert response.json() == response_for_failure(descriptor).model_dump(
+            mode="json"
+        )
+    else:
+        assert response.status_code == status_code
+        assert response.json() == {"detail": detail}
     assert str(error) not in response.text
 
 
@@ -496,6 +509,21 @@ def test_approval_resume_maps_errors_without_leaking_details(
         },
     )
 
-    assert response.status_code == status_code
-    assert response.json() == {"detail": detail}
+    application_errors = (
+        PlanningError,
+        ToolExecutionError,
+        LLMProviderError,
+        PersistenceError,
+        GroundedAnswerError,
+        EvidenceExtractionError,
+    )
+    if isinstance(error, application_errors):
+        descriptor = classify_failure(error)
+        assert response.status_code == http_status_for_failure(descriptor)
+        assert response.json() == response_for_failure(descriptor).model_dump(
+            mode="json"
+        )
+    else:
+        assert response.status_code == status_code
+        assert response.json() == {"detail": detail}
     assert str(error) not in response.text

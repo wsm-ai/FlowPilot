@@ -8,6 +8,15 @@ from app.schemas.planning import ExecutionPlan, PlanStep
 from app.services.approval_workflow_service import ApprovalWorkflowService
 from app.services.grounded_answer_service import GroundedAnswerError
 from app.tools.registry import ToolRegistry, create_default_tool_registry
+from tests.support.side_effects import PASSTHROUGH_SIDE_EFFECT_EXECUTOR
+
+
+_ApprovalWorkflowService = ApprovalWorkflowService
+
+
+def ApprovalWorkflowService(*args, **kwargs):
+    kwargs.setdefault("side_effect_executor", PASSTHROUGH_SIDE_EFFECT_EXECUTOR)
+    return _ApprovalWorkflowService(*args, **kwargs)
 
 
 class FakePlanner:
@@ -139,7 +148,9 @@ def test_final_approval_completion_synthesizes_once_using_resumed_state_goal(tmp
                 FakePlanner(approval_plan()), registry, saver, synthesis
             )
             started = await service.start("Original approval goal", thread_id="thread-a")
-            resumed = await service.resume("thread-a", "approve")
+            resumed = await service.resume(
+                "thread-a", "approve", run_id="run-thread-a"
+            )
         return started, resumed, synthesis, tool
 
     started, resumed, synthesis, tool = asyncio.run(scenario())
@@ -165,7 +176,9 @@ def test_synthesis_failure_after_approval_keeps_terminal_checkpoint_and_tool_onc
                 FakePlanner(approval_plan()), registry, saver, synthesis
             )
             await service.start("Create an issue", thread_id="thread-failure")
-            result = await service.resume("thread-failure", "approve")
+            result = await service.resume(
+                "thread-failure", "approve", run_id="run-thread-failure"
+            )
             snapshot = await service._graph.aget_state(
                 {"configurable": {"thread_id": "thread-failure"}}
             )

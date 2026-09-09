@@ -61,8 +61,13 @@ def test_chat_hides_provider_error(client: TestClient):
 
     response = client.post("/api/v1/chat", json={"message": "Hello"})
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert response.json() == {
-        "detail": "The language model service is unavailable"
+        "error": {
+            "code": "provider_failure",
+            "message": "Language model provider failure",
+            "category": "transient",
+            "domain": "provider",
+        }
     }
     assert "sensitive third-party error" not in response.text

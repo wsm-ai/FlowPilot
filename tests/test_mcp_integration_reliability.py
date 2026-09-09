@@ -35,6 +35,15 @@ from app.tools.base import ToolExecutionError
 from app.tools.customer_feedback import CustomerFeedbackTool
 from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import ToolRegistry
+from tests.support.side_effects import PASSTHROUGH_SIDE_EFFECT_EXECUTOR
+
+
+_ApprovalWorkflowService = ApprovalWorkflowService
+
+
+def ApprovalWorkflowService(*args, **kwargs):
+    kwargs.setdefault("side_effect_executor", PASSTHROUGH_SIDE_EFFECT_EXECUTOR)
+    return _ApprovalWorkflowService(*args, **kwargs)
 
 
 MCP_ACTION = "mcp_github_create_issue"
@@ -231,7 +240,9 @@ def test_hitl_mcp_side_effect_is_at_most_once(
             )
             pending = await service.start("Create issue", thread_id="thread-1")
             before = len(client.call_tool_calls)
-            result = await service.resume("thread-1", decision)
+            result = await service.resume(
+                "thread-1", decision, run_id="run-thread-1"
+            )
             with pytest.raises(ApprovalNotPendingError):
                 await service.resume("thread-1", decision)
             return pending, before, result, client

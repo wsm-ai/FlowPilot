@@ -1,16 +1,22 @@
 import json
 import math
+import asyncio
+from contextlib import AsyncExitStack
 
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.mcp.application import create_configured_mcp_client
-from app.mcp.client import MCPConnectionError
+from app.mcp.application import (
+    compose_configured_mcp_tools,
+    create_configured_mcp_client,
+)
+from app.mcp.client import MCPAuthenticationError, MCPConnectionError
 from app.mcp.config import (
     MCPConfiguredStdioServerConfig,
     MCPHTTPServerConfig,
 )
+from app.tools.registry import ToolRegistry
 
 
 @pytest.mark.parametrize(
@@ -99,6 +105,30 @@ def test_empty_mcp_configuration_is_backward_compatible(monkeypatch):
     assert Settings(_env_file=None).mcp_servers == []
 
 
+def test_mcp_servers_are_required_by_default():
+    stdio = MCPConfiguredStdioServerConfig(
+        server_id="local", transport="stdio", command="python"
+    )
+    http = MCPHTTPServerConfig(
+        server_id="remote",
+        transport="streamable_http",
+        url="https://example.com/mcp",
+    )
+    assert stdio.required is True
+    assert http.required is True
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1])
+def test_mcp_required_flag_accepts_only_real_booleans(value):
+    with pytest.raises(ValidationError):
+        MCPHTTPServerConfig(
+            server_id="remote",
+            transport="streamable_http",
+            url="https://example.com/mcp",
+            required=value,
+        )
+
+
 def test_missing_or_blank_auth_secret_fails_closed(monkeypatch):
     config = MCPHTTPServerConfig(
         server_id="github",
@@ -115,6 +145,30 @@ def test_missing_or_blank_auth_secret_fails_closed(monkeypatch):
     monkeypatch.setenv("GITHUB_MCP_TOKEN", "   ")
     with pytest.raises(MCPConnectionError):
         create_configured_mcp_client(config)
+
+
+def test_optional_missing_auth_secret_cannot_degrade(monkeypatch):
+    config = MCPHTTPServerConfig(
+        server_id="github",
+        transport="streamable_http",
+        url="https://example.com/mcp",
+        bearer_token_env="MISSING_PRIVATE_TOKEN",
+        required=False,
+    )
+    monkeypatch.delenv("MISSING_PRIVATE_TOKEN", raising=False)
+    registry = ToolRegistry()
+
+    async def scenario():
+        async with AsyncExitStack() as stack:
+            with pytest.raises(MCPAuthenticationError) as raised:
+                await compose_configured_mcp_tools(
+                    registry, [config], stack
+                )
+            return raised.value
+
+    error = asyncio.run(scenario())
+    assert str(error) == "MCP authentication secret is not configured"
+    assert registry.definitions() == []
 
 
 def test_resolved_secret_is_not_exposed(monkeypatch):

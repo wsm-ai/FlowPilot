@@ -1,7 +1,14 @@
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from app.mcp.naming import is_valid_server_id
 from app.mcp.stdio_client import MCPStdioServerConfig
@@ -11,6 +18,7 @@ class _MCPApplicationServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     server_id: str
+    required: StrictBool = True
 
     @field_validator("server_id")
     @classmethod

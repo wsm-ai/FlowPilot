@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api.agent import router as agent_router
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
+from app.api.errors import register_api_exception_handlers
 from app.core.config import get_settings
 from app.mcp.application import compose_configured_mcp_tools
 from app.mcp.server import (
@@ -13,6 +14,10 @@ from app.mcp.server import (
 )
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.persistence.sqlite_repository import SQLiteRunRepository
+from app.persistence.side_effect_repository import (
+    SQLiteSideEffectExecutionRepository,
+)
+from app.reliability.side_effects import SideEffectExecutor
 from app.retrieval.chunking import SimpleTextChunker
 from app.retrieval.demo_knowledge import bootstrap_demo_knowledge_base
 from app.retrieval.hash_embedding import HashEmbeddingProvider
@@ -29,6 +34,10 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     run_repository = SQLiteRunRepository("data/flowpilot.db")
     await run_repository.initialize()
+    side_effect_repository = SQLiteSideEffectExecutionRepository(
+        "data/flowpilot.db"
+    )
+    await side_effect_repository.initialize()
     embedding_provider = HashEmbeddingProvider()
     vector_store = InMemoryVectorStore()
     chunker = SimpleTextChunker()
@@ -48,12 +57,16 @@ async def lifespan(app: FastAPI):
             exit_stack,
         )
         app.state.run_repository = run_repository
+        app.state.side_effect_executor = SideEffectExecutor(
+            side_effect_repository
+        )
         app.state.checkpointer = checkpointer
         app.state.retriever = retriever
         app.state.tool_registry = registry
         app.state.mcp_approval_required_actions = (
             mcp_composition.approval_required_actions
         )
+        app.state.mcp_degradations = mcp_composition.degradations
         export_registry = create_mcp_export_registry(
             registry,
             mcp_composition.approval_required_actions,
@@ -73,6 +86,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+register_api_exception_handlers(app)
 
 
 app.include_router(health_router)

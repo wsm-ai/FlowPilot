@@ -4,16 +4,32 @@ import re
 from app.mcp.client import MCPClient, MCPToolRegistrationError
 from app.mcp.naming import is_valid_server_id
 from app.mcp.tool_adapter import MCPToolAdapter
+from app.reliability.retry import (
+    OperationSemantics,
+    RetryPolicy,
+    run_with_retry,
+)
+from app.reliability.degradation import (
+    DegradationRecord,
+    decide_degradation,
+)
+from app.reliability.failures import classify_failure
 from app.tools.registry import ToolRegistry
 
 
 _REMOTE_NAME_SEPARATOR = re.compile(r"[^a-z0-9]+")
+_DISCOVERY_RETRY_POLICY = RetryPolicy(max_attempts=2)
 
 
 @dataclass(frozen=True, slots=True)
 class MCPServerClientBinding:
     server_id: str
     client: MCPClient
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.required, bool):
+            raise TypeError("required must be a bool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +37,7 @@ class MCPToolComposition:
     tools: tuple[MCPToolAdapter, ...]
     local_names: tuple[str, ...]
     approval_required_actions: frozenset[str]
+    degradations: tuple[DegradationRecord, ...] = ()
 
 
 def _local_tool_name(server_id: str, remote_name: str) -> str:
@@ -44,8 +61,27 @@ async def compose_mcp_tools(
         server_ids.add(binding.server_id)
 
     discovered = []
+    degradations: list[DegradationRecord] = []
     for binding in bindings:
-        remote_tools = await binding.client.list_tools()
+        try:
+            remote_tools = await run_with_retry(
+                binding.client.list_tools,
+                semantics=OperationSemantics.READ_ONLY,
+                policy=_DISCOVERY_RETRY_POLICY,
+            )
+        except Exception as exc:
+            failure = classify_failure(exc)
+            decision = decide_degradation(
+                failure,
+                OperationSemantics.READ_ONLY,
+                optional=not binding.required,
+            )
+            if not decision.allowed:
+                raise
+            degradations.append(
+                DegradationRecord.from_failure(binding.server_id, failure)
+            )
+            continue
         discovered.append((binding, remote_tools))
 
     adapters: list[MCPToolAdapter] = []
@@ -80,4 +116,5 @@ async def compose_mcp_tools(
         tools=tuple(adapters),
         local_names=names,
         approval_required_actions=frozenset(names),
+        degradations=tuple(degradations),
     )

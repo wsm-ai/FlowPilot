@@ -1,17 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from app.grounding.evidence import EvidenceExtractionError
 from app.api.dependencies import (
     get_checkpointer,
     get_llm_service,
     get_mcp_approval_required_actions,
     get_reactive_tool_registry,
     get_run_repository,
+    get_side_effect_executor,
     get_tool_registry,
 )
-from app.persistence.repository import PersistenceError, RunRepository
-from app.providers.base import LLMProviderError
+from app.persistence.repository import RunRepository
+from app.reliability.side_effects import SideEffectExecutor
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
 from app.schemas.planned_agent import (
     ApprovalResumeRequest,
@@ -20,7 +20,7 @@ from app.schemas.planned_agent import (
     PlannedAgentRunRequest,
     PlannedAgentRunResponse,
 )
-from app.services.grounded_answer_service import GroundedAnswerError, GroundedAnswerService
+from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalThreadConflictError,
@@ -30,7 +30,7 @@ from app.services.approval_workflow_service import (
 from app.services.graph_agent_service import GraphAgentService
 from app.services.llm_service import LLMService
 from app.services.planned_agent_service import PlannedAgentService
-from app.services.planner_service import PlannerService, PlanningError
+from app.services.planner_service import PlannerService
 from app.services.persistent_agent_service import PersistentAgentService
 from app.services.persistent_approval_workflow_service import (
     ApprovalRunNotFoundError,
@@ -41,7 +41,6 @@ from app.services.persistent_approval_workflow_service import (
     PersistentApprovalWorkflowResult,
     PersistentApprovalWorkflowService,
 )
-from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
 
 
@@ -92,6 +91,7 @@ def get_approval_workflow_service(
     approval_required_actions: frozenset[str] = Depends(
         get_mcp_approval_required_actions
     ),
+    side_effect_executor: SideEffectExecutor = Depends(get_side_effect_executor),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
         planner_service=PlannerService(
@@ -102,6 +102,7 @@ def get_approval_workflow_service(
         registry=registry,
         checkpointer=checkpointer,
         grounded_answer_service=GroundedAnswerService(llm_service),
+        side_effect_executor=side_effect_executor,
     )
 
 
@@ -148,23 +149,7 @@ async def run_agent(
     request: AgentRunRequest,
     service: PersistentAgentService = Depends(get_persistent_agent_service),
 ) -> AgentRunResponse:
-    try:
-        result = await service.run(request.message, thread_id=request.thread_id)
-    except LLMProviderError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The language model service is unavailable",
-        ) from exc
-    except ToolExecutionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Tool execution failed",
-        ) from exc
-    except PersistenceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Agent persistence failed",
-        ) from exc
+    result = await service.run(request.message, thread_id=request.thread_id)
 
     return AgentRunResponse(
         run_id=result.run_id,
@@ -193,36 +178,6 @@ async def run_planned_agent(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Approval thread already exists",
-        ) from exc
-    except PlanningError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to execute the requested plan",
-        ) from exc
-    except LLMProviderError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The language model service is unavailable",
-        ) from exc
-    except GroundedAnswerError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to generate grounded answer",
-        ) from exc
-    except EvidenceExtractionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Grounded answer evidence is invalid",
-        ) from exc
-    except ToolExecutionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Plan step execution failed",
-        ) from exc
-    except PersistenceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Agent persistence failed",
         ) from exc
 
     return _planned_agent_response(result)
@@ -271,36 +226,6 @@ async def resume_planned_agent(
             status_code=status.HTTP_409_CONFLICT,
             detail="No pending approval for this thread",
         ) from exc
-    except PlanningError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to execute the requested plan",
-        ) from exc
-    except LLMProviderError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The language model service is unavailable",
-        ) from exc
-    except GroundedAnswerError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to generate grounded answer",
-        ) from exc
-    except EvidenceExtractionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Grounded answer evidence is invalid",
-        ) from exc
-    except ToolExecutionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Plan step execution failed",
-        ) from exc
-    except PersistenceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Agent persistence failed",
-        ) from exc
 
     return _planned_agent_response(result)
 
@@ -336,11 +261,6 @@ async def retry_grounded_answer(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Grounded answer retry state is invalid",
-        ) from exc
-    except PersistenceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Agent persistence failed",
         ) from exc
 
     return _planned_agent_response(result)

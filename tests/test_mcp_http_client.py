@@ -12,6 +12,11 @@ from pydantic import SecretStr
 import app.mcp.http_client as http_module
 
 from app.mcp.config import MCPHTTPServerConfig
+from app.mcp.client import (
+    MCPAuthenticationError,
+    MCPPermanentConnectionError,
+    MCPTransientConnectionError,
+)
 from app.mcp.http_client import StreamableHTTPMCPClient
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.tool_composition import MCPServerClientBinding, compose_mcp_tools
@@ -152,3 +157,109 @@ def test_http_client_builds_official_transport_with_auth_and_timeouts(
     timeout = captured["http_kwargs"]["timeout"]
     assert timeout.connect == 3
     assert timeout.read == 12
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [
+        (401, MCPAuthenticationError),
+        (403, MCPAuthenticationError),
+        (400, MCPPermanentConnectionError),
+        (503, MCPTransientConnectionError),
+    ],
+)
+def test_structured_http_status_classifies_connection_failure(
+    monkeypatch, status_code, error_type
+):
+    request = http_module.httpx2.Request("GET", "https://example.com/mcp")
+    response = http_module.httpx2.Response(status_code, request=request)
+    error = http_module.httpx2.HTTPStatusError(
+        "TOKEN=secret response body",
+        request=request,
+        response=response,
+    )
+
+    class FakeHTTPClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class FailingSDKClient:
+        def __init__(self, transport, *, read_timeout_seconds=None):
+            pass
+
+        async def __aenter__(self):
+            raise error
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    monkeypatch.setattr(http_module.httpx2, "AsyncClient", FakeHTTPClient)
+    monkeypatch.setattr(
+        http_module, "streamable_http_client", lambda *args, **kwargs: object()
+    )
+    monkeypatch.setattr(http_module, "Client", FailingSDKClient)
+    config = MCPHTTPServerConfig(
+        server_id="test",
+        transport="streamable_http",
+        url="https://example.com/mcp",
+    )
+
+    async def scenario():
+        with pytest.raises(error_type) as raised:
+            async with StreamableHTTPMCPClient(config):
+                pass
+        return raised.value
+
+    mapped = asyncio.run(scenario())
+    assert "secret" not in str(mapped)
+
+
+def test_generic_sdk_http_protocol_failure_is_permanent(monkeypatch):
+    error = http_module.SDKMCPError(-32099, "TOKEN=secret protocol detail")
+
+    class FakeHTTPClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    class FailingSDKClient:
+        def __init__(self, transport, *, read_timeout_seconds=None):
+            pass
+
+        async def __aenter__(self):
+            raise error
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    monkeypatch.setattr(http_module.httpx2, "AsyncClient", FakeHTTPClient)
+    monkeypatch.setattr(
+        http_module, "streamable_http_client", lambda *args, **kwargs: object()
+    )
+    monkeypatch.setattr(http_module, "Client", FailingSDKClient)
+    config = MCPHTTPServerConfig(
+        server_id="test",
+        transport="streamable_http",
+        url="https://example.com/mcp",
+    )
+
+    async def scenario():
+        with pytest.raises(MCPPermanentConnectionError) as raised:
+            async with StreamableHTTPMCPClient(config):
+                pass
+        return raised.value
+
+    mapped = asyncio.run(scenario())
+    assert str(mapped) == "MCP HTTP protocol connection failed"
+    assert "secret" not in str(mapped)
