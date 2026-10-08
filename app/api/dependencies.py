@@ -2,6 +2,10 @@ from fastapi import Depends, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.core.config import Settings, get_settings
+from app.observability import (
+    EventEmitter,
+    create_structured_logging_emitter,
+)
 from app.persistence.repository import RunRepository
 from app.reliability.side_effects import SideEffectExecutor
 from app.providers.deepseek import DeepSeekProvider
@@ -10,8 +14,15 @@ from app.services.llm_service import LLMService
 from app.tools.registry import ToolRegistry
 
 
+_event_emitter = create_structured_logging_emitter()
+
+
 def get_llm_service(settings: Settings = Depends(get_settings)) -> LLMService:
     return LLMService(DeepSeekProvider(settings))
+
+
+def get_event_emitter() -> EventEmitter:
+    return _event_emitter
 
 
 def get_run_repository(request: Request) -> RunRepository:

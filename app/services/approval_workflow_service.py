@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -6,6 +8,16 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 
 from app.graph.approval_workflow import create_approval_graph
+from app.observability import (
+    AgentEvent,
+    EventEmitter,
+    EventOutcome,
+    EventStage,
+    EventType,
+    NoOpEventEmitter,
+    emit_best_effort,
+    utc_now,
+)
 from app.grounding.models import GroundedAnswer
 from app.grounding.lifecycle import (
     GroundingSynthesisOutcome,
@@ -60,12 +72,16 @@ class ApprovalWorkflowService:
         checkpointer: BaseCheckpointSaver,
         grounded_answer_service: GroundedAnswerService | None = None,
         side_effect_executor: SideEffectExecutor | None = None,
+        event_emitter: EventEmitter | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._planner_service = planner_service
         self._graph = create_approval_graph(
             registry, checkpointer, side_effect_executor
         )
         self._grounded_answer_service = grounded_answer_service
+        self._event_emitter = event_emitter or NoOpEventEmitter()
+        self._clock = clock
 
     async def start(
         self,
@@ -99,7 +115,14 @@ class ApprovalWorkflowService:
         )
         snapshot = await self._graph.aget_state(config)
         result = self._build_result(resolved_thread_id, snapshot)
-        return await self._synthesize_if_completed(result, goal)
+        result = await self._synthesize_if_completed(result, goal)
+        if result.status == "approval_required":
+            self._emit(
+                EventType.APPROVAL_REQUIRED,
+                EventOutcome.WAITING,
+                thread_id=resolved_thread_id,
+            )
+        return result
 
     async def resume(
         self,
@@ -124,7 +147,45 @@ class ApprovalWorkflowService:
         goal = snapshot.values.get("goal")
         if not isinstance(goal, str):
             raise PlanningError("Approval workflow returned an invalid goal")
+        if decision == "approve" and result.status in {
+            "completed",
+            "approval_required",
+        }:
+            self._emit(
+                EventType.APPROVAL_APPROVED,
+                EventOutcome.APPROVED,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+        elif decision == "reject" and result.status == "rejected":
+            self._emit(
+                EventType.APPROVAL_REJECTED,
+                EventOutcome.REJECTED,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
         return await self._synthesize_if_completed(result, goal)
+
+    def _emit(
+        self,
+        event_type: EventType,
+        outcome: EventOutcome,
+        *,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        try:
+            event = AgentEvent(
+                event_type=event_type,
+                occurred_at=self._clock(),
+                stage=EventStage.APPROVAL,
+                outcome=outcome,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+        except Exception:
+            return
+        emit_best_effort(self._event_emitter, event)
 
     async def _synthesize_if_completed(
         self,

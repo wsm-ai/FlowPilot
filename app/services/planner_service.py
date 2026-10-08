@@ -1,11 +1,26 @@
 import json
-from typing import Any
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any, TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from app.providers.base import LLMProviderError
+from app.observability import (
+    AgentEvent,
+    EventEmitter,
+    EventOutcome,
+    EventStage,
+    EventType,
+    NoOpEventEmitter,
+    emit_best_effort,
+    utc_now,
+)
 from app.schemas.planning import ExecutionPlan
 from app.services.llm_service import LLMService
+
+if TYPE_CHECKING:
+    from app.reliability.failures import FailureCategory
 
 
 PLANNER_SYSTEM_PROMPT = """You are FlowPilot's task planner.
@@ -68,6 +83,8 @@ class PlannerService:
         llm_service: LLMService,
         tool_definitions: list[dict[str, Any]] | None = None,
         approval_required_actions: set[str] | frozenset[str] | None = None,
+        event_emitter: EventEmitter | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._llm_service = llm_service
         self._approval_required_actions = frozenset(
@@ -78,8 +95,20 @@ class PlannerService:
         self._tool_catalog, self._allowed_actions = self._build_tool_catalog(
             tool_definitions
         )
+        self._event_emitter = event_emitter or NoOpEventEmitter()
+        self._clock = clock
 
     async def create_plan(self, goal: str) -> ExecutionPlan:
+        self._emit(EventType.PLANNER_STARTED, EventOutcome.STARTED)
+        try:
+            plan = await self._create_plan(goal)
+        except Exception as exc:
+            self._emit_failure(exc)
+            raise
+        self._emit(EventType.PLANNER_COMPLETED, EventOutcome.SUCCEEDED)
+        return plan
+
+    async def _create_plan(self, goal: str) -> ExecutionPlan:
         if not goal.strip():
             raise PlanningError("Planning goal must not be blank")
 
@@ -120,6 +149,38 @@ class PlannerService:
             elif step.action in self._approval_required_actions:
                 step.requires_approval = True
         return plan
+
+    def _emit_failure(self, exc: Exception) -> None:
+        try:
+            from app.reliability.failures import classify_failure
+
+            failure_category = classify_failure(exc).category
+        except Exception:
+            return
+        self._emit(
+            EventType.PLANNER_FAILED,
+            EventOutcome.FAILED,
+            failure_category=failure_category,
+        )
+
+    def _emit(
+        self,
+        event_type: EventType,
+        outcome: EventOutcome,
+        *,
+        failure_category: "FailureCategory | None" = None,
+    ) -> None:
+        try:
+            event = AgentEvent(
+                event_type=event_type,
+                occurred_at=self._clock(),
+                stage=EventStage.PLANNER,
+                outcome=outcome,
+                failure_category=failure_category,
+            )
+        except Exception:
+            return
+        emit_best_effort(self._event_emitter, event)
 
     @staticmethod
     def _build_tool_catalog(
