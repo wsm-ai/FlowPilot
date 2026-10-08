@@ -1,0 +1,174 @@
+name: FlowPilot CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  foundation:
+    name: Foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LANGGRAPH_STRICT_MSGPACK: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          check-latest: false
+
+      - name: Print Python version
+        run: python --version
+
+      - name: Verify Python version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+
+          expected = (3, 11)
+          actual = sys.version_info[:2]
+          if actual != expected:
+              raise SystemExit(
+                  f"Expected Python {expected[0]}.{expected[1]}, "
+                  f"got {actual[0]}.{actual[1]}"
+              )
+          PY
+
+      - name: Verify repository structure
+        shell: bash
+        run: |
+          test -d app
+          test -d tests
+          test -f requirements.txt
+          test -f README.md
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run pytest
+        env:
+          DEEPSEEK_API_KEY: ci-test-key
+        run: python -m pytest -q --basetemp="${RUNNER_TEMP}/pytest"
+
+      - name: Generate evaluation reports
+        run: >-
+          python -m app.evaluation.cli
+          --output-dir "${RUNNER_TEMP}/flowpilot-evaluation"
+
+      - name: Verify evaluation reports
+        env:
+          EVALUATION_REPORT_DIR: ${{ runner.temp }}/flowpilot-evaluation
+        shell: bash
+        run: |
+          test -s "${EVALUATION_REPORT_DIR}/evaluation-report.json"
+          test -s "${EVALUATION_REPORT_DIR}/evaluation-report.md"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_directory = Path(os.environ["EVALUATION_REPORT_DIR"])
+          report = json.loads(
+              (report_directory / "evaluation-report.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_fields = {
+              "schema_version",
+              "suite_name",
+              "total_scenarios",
+              "passed_scenarios",
+              "failed_scenarios",
+              "error_scenarios",
+              "metrics",
+              "scenarios",
+          }
+          if set(report) != expected_fields:
+              raise SystemExit("Evaluation JSON has an invalid report structure")
+          if report["schema_version"] != "1.0":
+              raise SystemExit("Evaluation JSON has an unsupported schema version")
+          if not isinstance(report["metrics"], dict):
+              raise SystemExit("Evaluation JSON has invalid metrics")
+          if not isinstance(report["scenarios"], list):
+              raise SystemExit("Evaluation JSON has invalid scenarios")
+          count_fields = (
+              "total_scenarios",
+              "passed_scenarios",
+              "failed_scenarios",
+              "error_scenarios",
+          )
+          if any(
+              not isinstance(report[field], int)
+              or isinstance(report[field], bool)
+              or report[field] < 0
+              for field in count_fields
+          ):
+              raise SystemExit("Evaluation JSON has invalid scenario counts")
+          if report["total_scenarios"] != len(report["scenarios"]):
+              raise SystemExit("Evaluation JSON has inconsistent scenario totals")
+          if report["total_scenarios"] != sum(
+              report[field]
+              for field in (
+                  "passed_scenarios",
+                  "failed_scenarios",
+                  "error_scenarios",
+              )
+          ):
+              raise SystemExit("Evaluation JSON has inconsistent status totals")
+          scenario_fields = {
+              "case_id",
+              "status",
+              "checks",
+              "failure_code",
+          }
+          if any(
+              not isinstance(scenario, dict)
+              or set(scenario) != scenario_fields
+              or scenario["status"] not in {"passed", "failed", "error"}
+              or not isinstance(scenario["checks"], list)
+              for scenario in report["scenarios"]
+          ):
+              raise SystemExit("Evaluation JSON has invalid scenario entries")
+
+          markdown = (
+              report_directory / "evaluation-report.md"
+          ).read_text(encoding="utf-8")
+          if not markdown.startswith("# FlowPilot Evaluation Report\n"):
+              raise SystemExit("Evaluation Markdown has an invalid report structure")
+          PY
+
+      - name: Upload evaluation reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: flowpilot-evaluation-report
+          path: |
+            ${{ runner.temp }}/flowpilot-evaluation/evaluation-report.json
+            ${{ runner.temp }}/flowpilot-evaluation/evaluation-report.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Run regression quality gate
+        run: >-
+          python -m app.evaluation.gate_cli
+          --report "${RUNNER_TEMP}/flowpilot-evaluation/evaluation-report.json"
