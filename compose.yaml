@@ -1,0 +1,10 @@
+services:
+  flowpilot-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flowpilot:stage13b
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY must be set}
+    ports:
+      - "127.0.0.1:8000:8000"
