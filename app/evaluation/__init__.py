@@ -37,6 +37,20 @@ from app.evaluation.report_writer import (
     MARKDOWN_REPORT_FILENAME,
     write_evaluation_reports,
 )
+from app.evaluation.gate_models import (
+    DimensionThreshold,
+    GateCheck,
+    GateReason,
+    GateStatus,
+    RegressionGateConfig,
+    RegressionGateConfigurationError,
+    RegressionGateResult,
+)
+from app.evaluation.gate_validator import (
+    EvaluationReportValidationError,
+    load_evaluation_report,
+)
+from app.evaluation.regression_gate import evaluate_regression_gate
 
 __all__ = [
     "EvaluationCase",
@@ -68,4 +82,14 @@ __all__ = [
     "render_evaluation_report_json",
     "render_evaluation_report_markdown",
     "write_evaluation_reports",
+    "DimensionThreshold",
+    "EvaluationReportValidationError",
+    "GateCheck",
+    "GateReason",
+    "GateStatus",
+    "RegressionGateConfig",
+    "RegressionGateConfigurationError",
+    "RegressionGateResult",
+    "evaluate_regression_gate",
+    "load_evaluation_report",
 ]
