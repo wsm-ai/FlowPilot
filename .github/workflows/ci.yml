@@ -165,3 +165,8 @@ jobs:
             ${{ runner.temp }}/flowpilot-evaluation/evaluation-report.md
           if-no-files-found: error
           retention-days: 7
+
+      - name: Run regression quality gate
+        run: >-
+          python -m app.evaluation.gate_cli
+          --report "${RUNNER_TEMP}/flowpilot-evaluation/evaluation-report.json"
