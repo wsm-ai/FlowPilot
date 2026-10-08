@@ -17,6 +17,12 @@ from app.observability.models import (
     ObservabilityConfigurationError,
     utc_now,
 )
+from app.observability.trace import (
+    ExecutionTrace,
+    InMemoryTraceRecorder,
+    TraceConfigurationError,
+    TraceRecord,
+)
 
 __all__ = [
     "AgentEvent",
@@ -24,10 +30,14 @@ __all__ = [
     "EventOutcome",
     "EventStage",
     "EventType",
+    "ExecutionTrace",
+    "InMemoryTraceRecorder",
     "NoOpEventEmitter",
     "ObservabilityConfigurationError",
     "StructuredEventFormatter",
     "StructuredLoggingEmitter",
+    "TraceConfigurationError",
+    "TraceRecord",
     "create_structured_logging_emitter",
     "emit_best_effort",
     "event_to_dict",
