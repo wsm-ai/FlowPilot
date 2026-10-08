@@ -155,11 +155,13 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
             tool_definitions=None,
             approval_required_actions=None,
             event_emitter=None,
+            trace_emitter=None,
         ):
             captured["planner_llm"] = llm_service
             captured["tool_definitions"] = tool_definitions
             captured["approval_required_actions"] = approval_required_actions
             captured["planner_event_emitter"] = event_emitter
+            captured["planner_trace_emitter"] = trace_emitter
 
     class FakeGroundedAnswerService:
         def __init__(self, llm_service):
@@ -174,12 +176,14 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
             grounded_answer_service=None,
             side_effect_executor=None,
             event_emitter=None,
+            trace_emitter=None,
         ):
             captured["planner_service"] = planner_service
             captured["registry"] = registry
             captured["grounded_answer_service"] = grounded_answer_service
             captured["side_effect_executor"] = side_effect_executor
             captured["workflow_event_emitter"] = event_emitter
+            captured["workflow_trace_emitter"] = trace_emitter
 
     monkeypatch.setattr(agent_api, "PlannerService", FakePlannerService)
     monkeypatch.setattr(
@@ -196,6 +200,7 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
     llm_service = object()
     side_effect_executor = object()
     event_emitter = object()
+    trace_emitter = object()
     agent_api.get_approval_workflow_service(
         llm_service=llm_service,
         checkpointer=object(),
@@ -203,6 +208,7 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
         approval_required_actions=frozenset({"mcp_test_action"}),
         side_effect_executor=side_effect_executor,
         event_emitter=event_emitter,
+        trace_emitter=trace_emitter,
     )
 
     assert captured["registry"] is registry
@@ -213,3 +219,5 @@ def test_approval_service_uses_same_registry_for_planning_and_execution(
     assert captured["side_effect_executor"] is side_effect_executor
     assert captured["planner_event_emitter"] is event_emitter
     assert captured["workflow_event_emitter"] is event_emitter
+    assert captured["planner_trace_emitter"] is trace_emitter
+    assert captured["workflow_trace_emitter"] is trace_emitter

@@ -22,10 +22,17 @@ from app.observability.trace import (
     InMemoryTraceRecorder,
     TraceConfigurationError,
     TraceRecord,
+    TraceThreadAssociationConflictError,
+)
+from app.observability.trace_emitter import (
+    AsyncTraceEmitter,
+    NoOpAsyncTraceEmitter,
+    SQLiteTraceEmitter,
 )
 
 __all__ = [
     "AgentEvent",
+    "AsyncTraceEmitter",
     "EventEmitter",
     "EventOutcome",
     "EventStage",
@@ -33,11 +40,14 @@ __all__ = [
     "ExecutionTrace",
     "InMemoryTraceRecorder",
     "NoOpEventEmitter",
+    "NoOpAsyncTraceEmitter",
     "ObservabilityConfigurationError",
     "StructuredEventFormatter",
     "StructuredLoggingEmitter",
+    "SQLiteTraceEmitter",
     "TraceConfigurationError",
     "TraceRecord",
+    "TraceThreadAssociationConflictError",
     "create_structured_logging_emitter",
     "emit_best_effort",
     "event_to_dict",

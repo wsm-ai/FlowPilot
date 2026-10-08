@@ -3,6 +3,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.core.config import Settings, get_settings
 from app.observability import (
+    AsyncTraceEmitter,
     EventEmitter,
     create_structured_logging_emitter,
 )
@@ -23,6 +24,10 @@ def get_llm_service(settings: Settings = Depends(get_settings)) -> LLMService:
 
 def get_event_emitter() -> EventEmitter:
     return _event_emitter
+
+
+def get_trace_emitter(request: Request) -> AsyncTraceEmitter:
+    return request.app.state.trace_emitter
 
 
 def get_run_repository(request: Request) -> RunRepository:

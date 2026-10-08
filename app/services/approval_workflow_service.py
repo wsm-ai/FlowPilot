@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from collections.abc import Callable
+import asyncio
 from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -10,11 +11,13 @@ from langgraph.types import Command
 from app.graph.approval_workflow import create_approval_graph
 from app.observability import (
     AgentEvent,
+    AsyncTraceEmitter,
     EventEmitter,
     EventOutcome,
     EventStage,
     EventType,
     NoOpEventEmitter,
+    TraceThreadAssociationConflictError,
     emit_best_effort,
     utc_now,
 )
@@ -73,7 +76,9 @@ class ApprovalWorkflowService:
         grounded_answer_service: GroundedAnswerService | None = None,
         side_effect_executor: SideEffectExecutor | None = None,
         event_emitter: EventEmitter | None = None,
+        trace_emitter: AsyncTraceEmitter | None = None,
         clock: Callable[[], datetime] = utc_now,
+        trace_id_factory: Callable[[], str] = lambda: str(uuid4()),
     ) -> None:
         self._planner_service = planner_service
         self._graph = create_approval_graph(
@@ -81,7 +86,9 @@ class ApprovalWorkflowService:
         )
         self._grounded_answer_service = grounded_answer_service
         self._event_emitter = event_emitter or NoOpEventEmitter()
+        self._trace_emitter = trace_emitter
         self._clock = clock
+        self._trace_id_factory = trace_id_factory
 
     async def start(
         self,
@@ -96,33 +103,107 @@ class ApprovalWorkflowService:
         if existing_snapshot.values:
             raise ApprovalThreadConflictError("Approval thread already exists")
 
-        plan = await self._planner_service.create_plan(goal)
-        await self._graph.ainvoke(
-            {
-                "messages": [],
-                "llm_response": None,
-                "answer": None,
-                "executed_tools": [],
-                "goal": goal,
-                "plan": plan,
-                "current_step_index": 0,
-                "route": None,
-                "step_results": [],
-                "pending_approval": None,
-                "approval_decision": None,
-            },
-            config=config,
+        trace_id = (
+            self._trace_id_factory()
+            if self._trace_emitter is not None
+            else None
         )
-        snapshot = await self._graph.aget_state(config)
-        result = self._build_result(resolved_thread_id, snapshot)
-        result = await self._synthesize_if_completed(result, goal)
+        association_reserved = False
+        if trace_id is not None and self._trace_emitter is not None:
+            try:
+                association_reserved = await self._trace_emitter.associate_thread(
+                    resolved_thread_id, trace_id
+                )
+            except TraceThreadAssociationConflictError as exc:
+                raise ApprovalThreadConflictError(
+                    "Approval thread already exists"
+                ) from exc
+
+        try:
+            if trace_id is None:
+                plan = await self._planner_service.create_plan(goal)
+            else:
+                plan = await self._planner_service.create_plan(
+                    goal,
+                    trace_id=trace_id,
+                    thread_id=resolved_thread_id,
+                )
+            await self._graph.ainvoke(
+                {
+                    "messages": [],
+                    "llm_response": None,
+                    "answer": None,
+                    "executed_tools": [],
+                    "goal": goal,
+                    "plan": plan,
+                    "current_step_index": 0,
+                    "route": None,
+                    "step_results": [],
+                    "pending_approval": None,
+                    "approval_decision": None,
+                },
+                config=config,
+            )
+            snapshot = await self._graph.aget_state(config)
+            result = self._build_result(resolved_thread_id, snapshot)
+            result = await self._synthesize_if_completed(result, goal)
+        except asyncio.CancelledError:
+            await self._release_reservation_if_unused(
+                config,
+                resolved_thread_id,
+                trace_id,
+                association_reserved,
+            )
+            raise
+        except Exception:
+            await self._release_reservation_if_unused(
+                config,
+                resolved_thread_id,
+                trace_id,
+                association_reserved,
+            )
+            raise
         if result.status == "approval_required":
-            self._emit(
+            await self._emit(
                 EventType.APPROVAL_REQUIRED,
                 EventOutcome.WAITING,
+                trace_id=trace_id,
                 thread_id=resolved_thread_id,
             )
+        elif association_reserved and self._trace_emitter is not None:
+            await self._trace_emitter.release_thread(
+                resolved_thread_id, trace_id
+            )
         return result
+
+    async def _release_reservation_if_unused(
+        self,
+        config: dict[str, dict[str, str]],
+        thread_id: str,
+        trace_id: str | None,
+        association_reserved: bool,
+    ) -> None:
+        """Release only after proving that no checkpoint state was created.
+
+        A failed or cancelled state lookup is intentionally treated as unknown:
+        the reservation is retained so a durable checkpoint cannot lose its
+        trace identity.
+        """
+        if (
+            not association_reserved
+            or trace_id is None
+            or self._trace_emitter is None
+        ):
+            return
+        try:
+            snapshot = await self._graph.aget_state(config)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+        if snapshot.values:
+            return
+        await self._trace_emitter.release_thread(thread_id, trace_id)
 
     async def resume(
         self,
@@ -138,6 +219,12 @@ class ApprovalWorkflowService:
         if not isinstance(snapshot.values.get("pending_approval"), dict):
             raise ApprovalNotPendingError("No pending approval for this thread")
 
+        trace_id = (
+            await self._trace_emitter.trace_id_for_thread(thread_id)
+            if self._trace_emitter is not None
+            else None
+        )
+
         await self._graph.ainvoke(
             Command(resume={"decision": decision}),
             config=config,
@@ -151,26 +238,29 @@ class ApprovalWorkflowService:
             "completed",
             "approval_required",
         }:
-            self._emit(
+            await self._emit(
                 EventType.APPROVAL_APPROVED,
                 EventOutcome.APPROVED,
+                trace_id=trace_id,
                 run_id=run_id,
                 thread_id=thread_id,
             )
         elif decision == "reject" and result.status == "rejected":
-            self._emit(
+            await self._emit(
                 EventType.APPROVAL_REJECTED,
                 EventOutcome.REJECTED,
+                trace_id=trace_id,
                 run_id=run_id,
                 thread_id=thread_id,
             )
         return await self._synthesize_if_completed(result, goal)
 
-    def _emit(
+    async def _emit(
         self,
         event_type: EventType,
         outcome: EventOutcome,
         *,
+        trace_id: str | None = None,
         run_id: str | None = None,
         thread_id: str | None = None,
     ) -> None:
@@ -186,6 +276,8 @@ class ApprovalWorkflowService:
         except Exception:
             return
         emit_best_effort(self._event_emitter, event)
+        if trace_id is not None and self._trace_emitter is not None:
+            await self._trace_emitter.emit(trace_id, event)
 
     async def _synthesize_if_completed(
         self,

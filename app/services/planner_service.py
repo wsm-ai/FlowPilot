@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.providers.base import LLMProviderError
 from app.observability import (
     AgentEvent,
+    AsyncTraceEmitter,
     EventEmitter,
     EventOutcome,
     EventStage,
@@ -84,6 +85,7 @@ class PlannerService:
         tool_definitions: list[dict[str, Any]] | None = None,
         approval_required_actions: set[str] | frozenset[str] | None = None,
         event_emitter: EventEmitter | None = None,
+        trace_emitter: AsyncTraceEmitter | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._llm_service = llm_service
@@ -96,16 +98,41 @@ class PlannerService:
             tool_definitions
         )
         self._event_emitter = event_emitter or NoOpEventEmitter()
+        self._trace_emitter = trace_emitter
         self._clock = clock
 
-    async def create_plan(self, goal: str) -> ExecutionPlan:
-        self._emit(EventType.PLANNER_STARTED, EventOutcome.STARTED)
+    async def create_plan(
+        self,
+        goal: str,
+        *,
+        trace_id: str | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> ExecutionPlan:
+        await self._emit(
+            EventType.PLANNER_STARTED,
+            EventOutcome.STARTED,
+            trace_id=trace_id,
+            run_id=run_id,
+            thread_id=thread_id,
+        )
         try:
             plan = await self._create_plan(goal)
         except Exception as exc:
-            self._emit_failure(exc)
+            await self._emit_failure(
+                exc,
+                trace_id=trace_id,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
             raise
-        self._emit(EventType.PLANNER_COMPLETED, EventOutcome.SUCCEEDED)
+        await self._emit(
+            EventType.PLANNER_COMPLETED,
+            EventOutcome.SUCCEEDED,
+            trace_id=trace_id,
+            run_id=run_id,
+            thread_id=thread_id,
+        )
         return plan
 
     async def _create_plan(self, goal: str) -> ExecutionPlan:
@@ -150,24 +177,37 @@ class PlannerService:
                 step.requires_approval = True
         return plan
 
-    def _emit_failure(self, exc: Exception) -> None:
+    async def _emit_failure(
+        self,
+        exc: Exception,
+        *,
+        trace_id: str | None,
+        run_id: str | None,
+        thread_id: str | None,
+    ) -> None:
         try:
             from app.reliability.failures import classify_failure
 
             failure_category = classify_failure(exc).category
         except Exception:
             return
-        self._emit(
+        await self._emit(
             EventType.PLANNER_FAILED,
             EventOutcome.FAILED,
+            trace_id=trace_id,
+            run_id=run_id,
+            thread_id=thread_id,
             failure_category=failure_category,
         )
 
-    def _emit(
+    async def _emit(
         self,
         event_type: EventType,
         outcome: EventOutcome,
         *,
+        trace_id: str | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
         failure_category: "FailureCategory | None" = None,
     ) -> None:
         try:
@@ -176,11 +216,15 @@ class PlannerService:
                 occurred_at=self._clock(),
                 stage=EventStage.PLANNER,
                 outcome=outcome,
+                run_id=run_id,
+                thread_id=thread_id,
                 failure_category=failure_category,
             )
         except Exception:
             return
         emit_best_effort(self._event_emitter, event)
+        if trace_id is not None and self._trace_emitter is not None:
+            await self._trace_emitter.emit(trace_id, event)
 
     @staticmethod
     def _build_tool_catalog(

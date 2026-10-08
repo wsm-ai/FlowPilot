@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from uuid import uuid4
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.api.dependencies import (
@@ -10,8 +11,9 @@ from app.api.dependencies import (
     get_run_repository,
     get_side_effect_executor,
     get_tool_registry,
+    get_trace_emitter,
 )
-from app.observability import EventEmitter
+from app.observability import AsyncTraceEmitter, EventEmitter
 from app.persistence.repository import RunRepository
 from app.reliability.side_effects import SideEffectExecutor
 from app.schemas.agent import AgentRunRequest, AgentRunResponse, ExecutedToolResponse
@@ -75,6 +77,7 @@ def get_planned_agent_service(
         get_mcp_approval_required_actions
     ),
     event_emitter: EventEmitter = Depends(get_event_emitter),
+    trace_emitter: AsyncTraceEmitter = Depends(get_trace_emitter),
 ) -> PlannedAgentService:
     return PlannedAgentService(
         planner_service=PlannerService(
@@ -82,9 +85,11 @@ def get_planned_agent_service(
             tool_definitions=registry.definitions(),
             approval_required_actions=approval_required_actions,
             event_emitter=event_emitter,
+            trace_emitter=trace_emitter,
         ),
         registry=registry,
         grounded_answer_service=GroundedAnswerService(llm_service),
+        trace_id_factory=lambda: str(uuid4()),
     )
 
 
@@ -97,6 +102,7 @@ def get_approval_workflow_service(
     ),
     side_effect_executor: SideEffectExecutor = Depends(get_side_effect_executor),
     event_emitter: EventEmitter = Depends(get_event_emitter),
+    trace_emitter: AsyncTraceEmitter = Depends(get_trace_emitter),
 ) -> ApprovalWorkflowService:
     return ApprovalWorkflowService(
         planner_service=PlannerService(
@@ -104,12 +110,14 @@ def get_approval_workflow_service(
             tool_definitions=registry.definitions(),
             approval_required_actions=approval_required_actions,
             event_emitter=event_emitter,
+            trace_emitter=trace_emitter,
         ),
         registry=registry,
         checkpointer=checkpointer,
         grounded_answer_service=GroundedAnswerService(llm_service),
         side_effect_executor=side_effect_executor,
         event_emitter=event_emitter,
+        trace_emitter=trace_emitter,
     )
 
 

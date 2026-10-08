@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Literal
 
 from app.graph.execution_workflow import create_plan_execution_graph
@@ -31,13 +32,20 @@ class PlannedAgentService:
         planner_service: PlannerService,
         registry: ToolRegistry,
         grounded_answer_service: GroundedAnswerService | None = None,
+        trace_id_factory: Callable[[], str] | None = None,
     ) -> None:
         self._planner_service = planner_service
         self._execution_graph = create_plan_execution_graph(registry)
         self._grounded_answer_service = grounded_answer_service
+        self._trace_id_factory = trace_id_factory
 
     async def run(self, goal: str) -> PlannedAgentResult:
-        plan = await self._planner_service.create_plan(goal)
+        if self._trace_id_factory is None:
+            plan = await self._planner_service.create_plan(goal)
+        else:
+            plan = await self._planner_service.create_plan(
+                goal, trace_id=self._trace_id_factory()
+            )
         result = await self._execution_graph.ainvoke(
             {
                 "messages": [],

@@ -17,6 +17,10 @@ class TraceConfigurationError(ValueError):
     """Raised when trace data or recorder configuration is invalid."""
 
 
+class TraceThreadAssociationConflictError(Exception):
+    """Raised when a thread is already reserved by another trace."""
+
+
 def _trace_identifier(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TraceConfigurationError("trace_id must not be blank")

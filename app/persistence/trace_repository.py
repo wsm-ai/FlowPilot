@@ -15,6 +15,7 @@ from app.observability.trace import (
     ExecutionTrace,
     TraceConfigurationError,
     TraceRecord,
+    TraceThreadAssociationConflictError,
 )
 from app.persistence.repository import PersistenceError
 from app.reliability.failures import FailureCategory
@@ -46,6 +47,14 @@ class SQLiteTraceRepository:
                         thread_id TEXT NULL,
                         failure_category TEXT NULL,
                         PRIMARY KEY (trace_id, sequence)
+                    )
+                    """
+                )
+                await database.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS execution_trace_threads (
+                        thread_id TEXT PRIMARY KEY,
+                        trace_id TEXT NOT NULL UNIQUE
                     )
                     """
                 )
@@ -150,6 +159,79 @@ class SQLiteTraceRepository:
             records=records,
         )
 
+    async def associate_thread(self, thread_id: str, trace_id: str) -> None:
+        normalized_thread = self._validate_thread_id(thread_id)
+        normalized_trace = self._validate_trace_id(trace_id)
+        try:
+            async with self._connect() as database:
+                try:
+                    await database.execute(
+                        """
+                        INSERT INTO execution_trace_threads (thread_id, trace_id)
+                        VALUES (?, ?)
+                        """,
+                        (normalized_thread, normalized_trace),
+                    )
+                    await database.commit()
+                except sqlite3.IntegrityError:
+                    await self._rollback_best_effort(database)
+                    async with database.execute(
+                        """
+                        SELECT trace_id FROM execution_trace_threads
+                        WHERE thread_id = ?
+                        """,
+                        (normalized_thread,),
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    if row is None or row[0] != normalized_trace:
+                        raise TraceThreadAssociationConflictError(
+                            "Trace thread association conflicts"
+                        )
+        except (PersistenceError, TraceThreadAssociationConflictError):
+            raise
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                "Unable to associate trace thread"
+            ) from exc
+
+    async def release_thread(self, thread_id: str, trace_id: str) -> None:
+        normalized_thread = self._validate_thread_id(thread_id)
+        normalized_trace = self._validate_trace_id(trace_id)
+        try:
+            async with self._connect() as database:
+                await database.execute(
+                    """
+                    DELETE FROM execution_trace_threads
+                    WHERE thread_id = ? AND trace_id = ?
+                    """,
+                    (normalized_thread, normalized_trace),
+                )
+                await database.commit()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                "Unable to release trace thread association"
+            ) from exc
+
+    async def get_trace_id_for_thread(self, thread_id: str) -> str | None:
+        normalized_thread = self._validate_thread_id(thread_id)
+        try:
+            async with self._connect() as database:
+                async with database.execute(
+                    """
+                    SELECT trace_id FROM execution_trace_threads
+                    WHERE thread_id = ?
+                    """,
+                    (normalized_thread,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+        except sqlite3.Error as exc:
+            raise PersistenceError(
+                "Unable to read trace thread association"
+            ) from exc
+        if row is None:
+            return None
+        return self._validate_trace_id(row[0])
+
     def _connect(self) -> aiosqlite.Connection:
         return aiosqlite.connect(
             self._database_path,
@@ -169,6 +251,12 @@ class SQLiteTraceRepository:
             return ExecutionTrace(trace_id=trace_id, records=()).trace_id
         except TraceConfigurationError as exc:
             raise PersistenceError("Invalid trace identifier") from exc
+
+    @staticmethod
+    def _validate_thread_id(thread_id: str) -> str:
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise PersistenceError("Invalid trace thread identifier")
+        return thread_id.strip()
 
     @classmethod
     def _validate_input(cls, trace_id: str, event: AgentEvent) -> str:
