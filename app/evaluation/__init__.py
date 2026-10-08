@@ -9,6 +9,13 @@ from app.evaluation.models import (
     EvaluationSummary,
     summarize,
 )
+from app.evaluation.metrics import (
+    DimensionMetrics,
+    EvaluationDimension,
+    EvaluationMetricConfigurationError,
+    EvaluationMetrics,
+    calculate_metrics,
+)
 from app.evaluation.runner import EvaluationRunner
 from app.evaluation.scenarios import build_default_evaluation_cases
 
@@ -22,6 +29,11 @@ __all__ = [
     "EvaluationScenario",
     "EvaluationStatus",
     "EvaluationSummary",
+    "DimensionMetrics",
+    "EvaluationDimension",
+    "EvaluationMetricConfigurationError",
+    "EvaluationMetrics",
+    "calculate_metrics",
     "summarize",
     "build_default_evaluation_cases",
 ]
