@@ -1,0 +1,62 @@
+name: FlowPilot CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  foundation:
+    name: Foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          check-latest: false
+
+      - name: Print Python version
+        run: python --version
+
+      - name: Verify Python version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+
+          expected = (3, 11)
+          actual = sys.version_info[:2]
+          if actual != expected:
+              raise SystemExit(
+                  f"Expected Python {expected[0]}.{expected[1]}, "
+                  f"got {actual[0]}.{actual[1]}"
+              )
+          PY
+
+      - name: Verify repository structure
+        shell: bash
+        run: |
+          test -d app
+          test -d tests
+          test -f requirements.txt
+          test -f README.md
