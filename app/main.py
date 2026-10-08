@@ -1,4 +1,6 @@
+import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 
@@ -17,6 +19,8 @@ from app.persistence.sqlite_repository import SQLiteRunRepository
 from app.persistence.side_effect_repository import (
     SQLiteSideEffectExecutionRepository,
 )
+from app.persistence.trace_repository import SQLiteTraceRepository
+from app.observability import NoOpAsyncTraceEmitter, SQLiteTraceEmitter
 from app.reliability.side_effects import SideEffectExecutor
 from app.retrieval.chunking import SimpleTextChunker
 from app.retrieval.demo_knowledge import bootstrap_demo_knowledge_base
@@ -29,6 +33,26 @@ from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import create_default_tool_registry
 
 
+_diagnostic_logger = logging.getLogger("flowpilot.observability.diagnostics")
+
+
+async def initialize_trace_persistence(
+    database_path: str,
+) -> tuple[SQLiteTraceRepository | None, SQLiteTraceEmitter | NoOpAsyncTraceEmitter]:
+    repository = SQLiteTraceRepository(database_path)
+    try:
+        await repository.initialize()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        try:
+            _diagnostic_logger.warning("Trace persistence initialization failed")
+        except Exception:
+            pass
+        return None, NoOpAsyncTraceEmitter()
+    return repository, SQLiteTraceEmitter(repository)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -38,6 +62,9 @@ async def lifespan(app: FastAPI):
         "data/flowpilot.db"
     )
     await side_effect_repository.initialize()
+    trace_repository, trace_emitter = await initialize_trace_persistence(
+        "data/flowpilot.db"
+    )
     embedding_provider = HashEmbeddingProvider()
     vector_store = InMemoryVectorStore()
     chunker = SimpleTextChunker()
@@ -60,6 +87,8 @@ async def lifespan(app: FastAPI):
         app.state.side_effect_executor = SideEffectExecutor(
             side_effect_repository
         )
+        app.state.trace_repository = trace_repository
+        app.state.trace_emitter = trace_emitter
         app.state.checkpointer = checkpointer
         app.state.retriever = retriever
         app.state.tool_registry = registry

@@ -1,11 +1,27 @@
 import json
-from typing import Any
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any, TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from app.providers.base import LLMProviderError
+from app.observability import (
+    AgentEvent,
+    AsyncTraceEmitter,
+    EventEmitter,
+    EventOutcome,
+    EventStage,
+    EventType,
+    NoOpEventEmitter,
+    emit_best_effort,
+    utc_now,
+)
 from app.schemas.planning import ExecutionPlan
 from app.services.llm_service import LLMService
+
+if TYPE_CHECKING:
+    from app.reliability.failures import FailureCategory
 
 
 PLANNER_SYSTEM_PROMPT = """You are FlowPilot's task planner.
@@ -58,12 +74,19 @@ class PlanningError(Exception):
     """Raised when an LLM-generated execution plan is invalid."""
 
 
+class UnavailablePlanActionError(PlanningError):
+    """Raised when a plan selects an action absent from the tool catalog."""
+
+
 class PlannerService:
     def __init__(
         self,
         llm_service: LLMService,
         tool_definitions: list[dict[str, Any]] | None = None,
         approval_required_actions: set[str] | frozenset[str] | None = None,
+        event_emitter: EventEmitter | None = None,
+        trace_emitter: AsyncTraceEmitter | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._llm_service = llm_service
         self._approval_required_actions = frozenset(
@@ -74,8 +97,45 @@ class PlannerService:
         self._tool_catalog, self._allowed_actions = self._build_tool_catalog(
             tool_definitions
         )
+        self._event_emitter = event_emitter or NoOpEventEmitter()
+        self._trace_emitter = trace_emitter
+        self._clock = clock
 
-    async def create_plan(self, goal: str) -> ExecutionPlan:
+    async def create_plan(
+        self,
+        goal: str,
+        *,
+        trace_id: str | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> ExecutionPlan:
+        await self._emit(
+            EventType.PLANNER_STARTED,
+            EventOutcome.STARTED,
+            trace_id=trace_id,
+            run_id=run_id,
+            thread_id=thread_id,
+        )
+        try:
+            plan = await self._create_plan(goal)
+        except Exception as exc:
+            await self._emit_failure(
+                exc,
+                trace_id=trace_id,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+            raise
+        await self._emit(
+            EventType.PLANNER_COMPLETED,
+            EventOutcome.SUCCEEDED,
+            trace_id=trace_id,
+            run_id=run_id,
+            thread_id=thread_id,
+        )
+        return plan
+
+    async def _create_plan(self, goal: str) -> ExecutionPlan:
         if not goal.strip():
             raise PlanningError("Planning goal must not be blank")
 
@@ -108,7 +168,7 @@ class PlannerService:
         if self._allowed_actions is not None and any(
             step.action not in self._allowed_actions for step in plan.steps
         ):
-            raise PlanningError("Plan contains unavailable action")
+            raise UnavailablePlanActionError("Plan contains unavailable action")
 
         for step in plan.steps:
             if step.action in READ_ONLY_ACTIONS:
@@ -116,6 +176,55 @@ class PlannerService:
             elif step.action in self._approval_required_actions:
                 step.requires_approval = True
         return plan
+
+    async def _emit_failure(
+        self,
+        exc: Exception,
+        *,
+        trace_id: str | None,
+        run_id: str | None,
+        thread_id: str | None,
+    ) -> None:
+        try:
+            from app.reliability.failures import classify_failure
+
+            failure_category = classify_failure(exc).category
+        except Exception:
+            return
+        await self._emit(
+            EventType.PLANNER_FAILED,
+            EventOutcome.FAILED,
+            trace_id=trace_id,
+            run_id=run_id,
+            thread_id=thread_id,
+            failure_category=failure_category,
+        )
+
+    async def _emit(
+        self,
+        event_type: EventType,
+        outcome: EventOutcome,
+        *,
+        trace_id: str | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+        failure_category: "FailureCategory | None" = None,
+    ) -> None:
+        try:
+            event = AgentEvent(
+                event_type=event_type,
+                occurred_at=self._clock(),
+                stage=EventStage.PLANNER,
+                outcome=outcome,
+                run_id=run_id,
+                thread_id=thread_id,
+                failure_category=failure_category,
+            )
+        except Exception:
+            return
+        emit_best_effort(self._event_emitter, event)
+        if trace_id is not None and self._trace_emitter is not None:
+            await self._trace_emitter.emit(trace_id, event)
 
     @staticmethod
     def _build_tool_catalog(
