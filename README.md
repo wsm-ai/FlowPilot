@@ -126,6 +126,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_docker.ps1
 
 Never commit a real API key or local `.env` file.
 
+## Security
+
+FlowPilot includes API Key authentication, role-based access control, bounded HTTP input handling, sensitive log redaction, approval-bound MCP/tool execution, and automated security regression tests. High-risk tools require a trusted server-side HITL approval and remain protected by the side-effect ledger.
+
+See the [security guide](docs/security.md) for configuration, the current RBAC matrix, tool-risk rules, deployment boundaries, and known limitations.
+
 ## Author
 
 Independent AI Agent engineering project.
