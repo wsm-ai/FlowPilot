@@ -106,6 +106,26 @@ Current version: `v0.0.1`
 
 Project initialization.
 
+## Docker Deployment
+
+FlowPilot supports local single-container deployment with Docker Compose, including a non-root runtime, SQLite named-volume persistence, a Docker healthcheck, and bounded container logs.
+
+See the [Docker deployment guide](docs/docker-deployment.md) for environment setup, startup, maintenance, troubleshooting, and current deployment limitations.
+
+Quick start after securely providing `DEEPSEEK_API_KEY`:
+
+```powershell
+docker compose up --build -d
+```
+
+Run the isolated Docker integration test with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_docker.ps1
+```
+
+Never commit a real API key or local `.env` file.
+
 ## Author
 
 Independent AI Agent engineering project.
