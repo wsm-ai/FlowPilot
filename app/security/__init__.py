@@ -9,6 +9,7 @@ from app.security.redaction import (
     redact_sensitive_data,
     redact_text,
 )
+from app.security.tool_authorization import ToolRisk
 
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "configure_sensitive_logging",
     "redact_sensitive_data",
     "redact_text",
+    "ToolRisk",
 ]

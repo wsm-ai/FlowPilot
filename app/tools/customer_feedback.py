@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.tools.base import ToolExecutionError
+from app.security.tool_authorization import ToolRisk
 
 
 Priority = Literal["low", "medium", "high"]
@@ -71,6 +72,7 @@ DEMO_CUSTOMER_FEEDBACK: list[dict[str, str]] = [
 
 class CustomerFeedbackTool:
     name = "get_customer_feedback"
+    risk = ToolRisk.READ_ONLY
     description = "Get customer feedback records by customer ID and optional priority."
 
     @property

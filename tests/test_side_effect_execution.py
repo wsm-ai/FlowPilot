@@ -22,6 +22,14 @@ from app.reliability.timeouts import (
     TimeoutPolicy,
 )
 from app.schemas.planning import ExecutionPlan, PlanStep
+from app.security.tool_authorization import (
+    ApprovalGrantAuthority,
+    ApprovedToolExecutionGrant,
+    ToolRisk,
+)
+
+
+TEST_APPROVAL_AUTHORITY = ApprovalGrantAuthority()
 from app.tools.registry import ToolRegistry
 
 
@@ -469,6 +477,7 @@ def test_guarded_approved_executor_replays_result_without_second_tool_call(
 ):
     class IssueTool:
         name = "create_issue"
+        risk = ToolRisk.HIGH_RISK
         description = "Create an issue"
         parameters = {"type": "object"}
 
@@ -505,9 +514,19 @@ def test_guarded_approved_executor_replays_result_without_second_tool_call(
             "pending_approval": None,
             "step_results": [],
         }
-        config = {"configurable": {"run_id": "run-7"}}
-        first = await executor(state, config)
-        second = await executor(state, config)
+        config = {
+            "configurable": {"run_id": "run-7", "thread_id": "thread-7"}
+        }
+        grant = TEST_APPROVAL_AUTHORITY.issue(
+            run_id="run-7",
+            thread_id="thread-7",
+            step_id=7,
+            action="create_issue",
+            arguments={"title": "Login bug"},
+        )
+        with TEST_APPROVAL_AUTHORITY.activate(grant):
+            first = await executor(state, config)
+            second = await executor(state, config)
         return tool.call_count, first, second
 
     calls, first, second = asyncio.run(scenario())

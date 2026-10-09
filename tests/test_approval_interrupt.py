@@ -11,6 +11,14 @@ from app.graph.approval_workflow import create_approval_graph
 from app.graph.execution_nodes import create_approved_plan_step_executor
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.schemas.planning import ExecutionPlan, PlanStep
+from app.security.tool_authorization import (
+    ApprovalGrantAuthority,
+    ApprovedToolExecutionGrant,
+    ToolRisk,
+)
+
+
+TEST_APPROVAL_AUTHORITY = ApprovalGrantAuthority()
 from app.services.planner_service import PlanningError
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry, create_default_tool_registry
@@ -18,6 +26,7 @@ from app.tools.registry import ToolRegistry, create_default_tool_registry
 
 class SpyIssueTool:
     name = "create_test_issue"
+    risk = ToolRisk.HIGH_RISK
     description = "Create a test issue"
     parameters = {
         "type": "object",
@@ -89,6 +98,36 @@ def expected_payload() -> dict[str, object]:
     }
 
 
+def grant_for(
+    identity: str,
+    *,
+    step_id: int = 1,
+    arguments: dict[str, object] | None = None,
+) -> ApprovedToolExecutionGrant:
+    return TEST_APPROVAL_AUTHORITY.issue(
+        run_id=identity,
+        thread_id=identity,
+        step_id=step_id,
+        action="create_test_issue",
+        arguments=(
+            {"title": "Critical login bug"}
+            if arguments is None
+            else arguments
+        ),
+    )
+
+
+async def resume_with_grant(graph, identity: str, decision: str = "approve"):
+    if decision == "reject":
+        return await graph.ainvoke(
+            Command(resume={"decision": decision}), config=config(identity)
+        )
+    with TEST_APPROVAL_AUTHORITY.activate(grant_for(identity)):
+        return await graph.ainvoke(
+            Command(resume={"decision": decision}), config=config(identity)
+        )
+
+
 def test_approval_step_interrupts_with_safe_payload_and_no_side_effects(tmp_path):
     async def scenario():
         async with async_checkpoint_saver(tmp_path / "approval.sqlite") as saver:
@@ -123,9 +162,8 @@ def test_approval_graph_resumes_with_valid_decision(tmp_path, decision: str):
             )
             thread_config = config(f"{decision}-thread")
             await graph.ainvoke(initial_state(), config=thread_config)
-            result = await graph.ainvoke(
-                Command(resume={"decision": decision}),
-                config=thread_config,
+            result = await resume_with_grant(
+                graph, f"{decision}-thread", decision
             )
             return result, tool
 
@@ -181,10 +219,7 @@ def test_approval_resume_survives_saver_reconnection(tmp_path):
             graph_b = create_approval_graph(
                 registry, saver_b, PassthroughSideEffectExecutor()
             )
-            result = await graph_b.ainvoke(
-                Command(resume={"decision": "approve"}),
-                config=thread_config,
-            )
+            result = await resume_with_grant(graph_b, "durable-approval")
             return result, tool
 
     result, tool = asyncio.run(scenario())
@@ -207,10 +242,7 @@ def test_approval_threads_are_isolated(tmp_path):
             config_b = config("thread-b")
             await graph.ainvoke(initial_state(), config=config_a)
             await graph.ainvoke(initial_state(), config=config_b)
-            result_a = await graph.ainvoke(
-                Command(resume={"decision": "approve"}),
-                config=config_a,
-            )
+            result_a = await resume_with_grant(graph, "thread-a")
             snapshot_b = await graph.aget_state(config_b)
             return result_a, snapshot_b, tool
 
@@ -333,7 +365,9 @@ def test_approved_executor_propagates_unknown_tool_error():
         ToolRegistry(), PassthroughSideEffectExecutor()
     )
 
-    with pytest.raises(ToolExecutionError):
+    with TEST_APPROVAL_AUTHORITY.activate(grant_for("unknown-tool")), pytest.raises(
+        ToolExecutionError
+    ):
         asyncio.run(executor(approved_state(), config("unknown-tool")))
 
 
@@ -343,7 +377,8 @@ def test_approved_executor_executes_registered_tool_once():
         registry, PassthroughSideEffectExecutor()
     )
 
-    result = asyncio.run(executor(approved_state(), config("execute-once")))
+    with TEST_APPROVAL_AUTHORITY.activate(grant_for("execute-once")):
+        result = asyncio.run(executor(approved_state(), config("execute-once")))
 
     assert tool.call_count == 1
     assert tool.arguments_received == [{"title": "Critical login bug"}]
@@ -383,10 +418,17 @@ def test_mixed_plan_runs_normal_step_then_waits_for_approval(tmp_path):
             await graph.ainvoke(state, config=thread_config)
             paused = await graph.aget_state(thread_config)
             call_count_before_approval = tool.call_count
-            result = await graph.ainvoke(
-                Command(resume={"decision": "approve"}),
-                config=thread_config,
-            )
+            with TEST_APPROVAL_AUTHORITY.activate(
+                grant_for(
+                    "mixed-thread",
+                    step_id=2,
+                    arguments={"title": "Critical login bug"},
+                )
+            ):
+                result = await graph.ainvoke(
+                    Command(resume={"decision": "approve"}),
+                    config=thread_config,
+                )
             return paused, call_count_before_approval, result, tool
 
     paused, call_count_before_approval, result, tool = asyncio.run(scenario())
@@ -408,14 +450,8 @@ def test_repeated_resume_does_not_repeat_approved_side_effect(tmp_path):
             )
             thread_config = config("repeat-thread")
             await graph.ainvoke(initial_state(), config=thread_config)
-            await graph.ainvoke(
-                Command(resume={"decision": "approve"}),
-                config=thread_config,
-            )
-            await graph.ainvoke(
-                Command(resume={"decision": "approve"}),
-                config=thread_config,
-            )
+            await resume_with_grant(graph, "repeat-thread")
+            await resume_with_grant(graph, "repeat-thread")
             return tool.call_count
 
     assert asyncio.run(scenario()) == 1
@@ -433,7 +469,9 @@ def test_approved_tool_failure_does_not_advance_step():
     )
     state = approved_state()
 
-    with pytest.raises(ToolExecutionError):
+    with TEST_APPROVAL_AUTHORITY.activate(grant_for("failing-tool")), pytest.raises(
+        ToolExecutionError
+    ):
         asyncio.run(executor(state, config("failing-tool")))
 
     assert state["current_step_index"] == 0

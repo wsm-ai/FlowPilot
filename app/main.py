@@ -36,6 +36,7 @@ from app.security import (
     SecurityHeadersMiddleware,
     configure_sensitive_logging,
 )
+from app.security.tool_authorization import ToolRisk
 from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import create_default_tool_registry
 
@@ -98,7 +99,7 @@ async def lifespan(app: FastAPI):
     await bootstrap_demo_knowledge_base(indexer)
     retriever = VectorRetriever(embedding_provider, vector_store)
     registry = create_default_tool_registry()
-    registry.register(KnowledgeBaseTool(retriever))
+    registry.register(KnowledgeBaseTool(retriever), risk=ToolRisk.READ_ONLY)
     async with AsyncExitStack() as exit_stack:
         checkpointer = await exit_stack.enter_async_context(
             async_checkpoint_saver("data/checkpoints.sqlite")

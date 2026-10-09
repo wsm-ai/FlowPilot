@@ -20,6 +20,15 @@ from app.mcp.client import (
 from app.mcp.http_client import StreamableHTTPMCPClient
 from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.tool_composition import MCPServerClientBinding, compose_mcp_tools
+from app.security.rbac import Role
+from app.security.tool_authorization import (
+    ApprovalGrantAuthority,
+    ApprovedToolExecutionGrant,
+    tool_execution_role,
+)
+
+
+TEST_APPROVAL_AUTHORITY = ApprovalGrantAuthority()
 from app.tools.registry import ToolRegistry
 
 
@@ -79,9 +88,14 @@ def test_real_streamable_http_discovery_call_and_registry_composition():
                 registry,
                 [MCPServerClientBinding("test", client)],
             )
-            composed = await registry.execute(
-                "mcp_test_add_numbers", {"a": 4, "b": 5}
+            grant = TEST_APPROVAL_AUTHORITY.issue(
+                run_id="run-test", thread_id="thread-test", step_id=1,
+                action="mcp_test_add_numbers", arguments={"a": 4, "b": 5},
             )
+            with tool_execution_role(Role.ADMIN), TEST_APPROVAL_AUTHORITY.activate(grant):
+                composed = await registry.execute(
+                    "mcp_test_add_numbers", {"a": 4, "b": 5}
+                )
             return tools, direct, composition, composed
 
     with running_http_mcp_server() as url:

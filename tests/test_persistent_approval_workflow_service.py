@@ -7,6 +7,7 @@ from app.persistence.repository import PersistenceError
 from app.persistence.sqlite_repository import SQLiteRunRepository
 from app.providers.base import LLMProviderError
 from app.schemas.planning import ExecutionPlan, PlanStep
+from app.security.tool_authorization import ToolRisk
 from app.services.approval_workflow_service import ApprovalWorkflowService
 from app.services.persistent_approval_workflow_service import (
     ApprovalRunNotFoundError,
@@ -41,6 +42,7 @@ class FakePlannerService:
 
 class SpyIssueTool:
     name = "create_test_issue"
+    risk = ToolRisk.HIGH_RISK
     description = "Create a test issue"
     parameters = {"type": "object", "properties": {}}
 

@@ -8,6 +8,10 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.security.rbac import ROLE_PERMISSIONS, Permission, Role, required_permission
+from app.security.tool_authorization import (
+    reset_tool_execution_role,
+    set_tool_execution_role,
+)
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -71,7 +75,11 @@ class APIKeyAuthenticationMiddleware:
 
         scope.setdefault("state", {})["flowpilot_role"] = role.value
 
-        await self._app(scope, receive, send)
+        identity_token = set_tool_execution_role(role)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            reset_tool_execution_role(identity_token)
 
     @staticmethod
     def _authenticated_role(

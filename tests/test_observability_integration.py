@@ -14,6 +14,7 @@ from app.persistence.side_effect_repository import SQLiteSideEffectExecutionRepo
 from app.providers.types import LLMResponse
 from app.reliability.failures import FailureCategory
 from app.reliability.side_effects import SideEffectExecutor
+from app.security.tool_authorization import ToolRisk
 from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalWorkflowService,
@@ -138,6 +139,7 @@ def test_production_service_composition_injects_operational_emitter() -> None:
 
 class SideEffectTool:
     name = "create_issue"
+    risk = ToolRisk.HIGH_RISK
     description = "Create a fake issue"
     parameters = {"type": "object", "properties": {}}
 
