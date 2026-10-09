@@ -37,6 +37,7 @@ $environmentNames = @(
     "FLOWPILOT_AUTH_ENABLED",
     "FLOWPILOT_API_KEY"
     "FLOWPILOT_API_KEYS"
+    "FLOWPILOT_MAX_REQUEST_BODY_BYTES"
 )
 $originalEnvironment = @{}
 
@@ -203,6 +204,7 @@ try {
         '[{"key":"flowpilot-docker-operator-key","role":"operator"}]',
         "Process"
     )
+    [Environment]::SetEnvironmentVariable("FLOWPILOT_MAX_REQUEST_BODY_BYTES", "1048576", "Process")
 
     $safeEnvFile = Join-Path ([IO.Path]::GetTempPath()) (
         "flowpilot-13f-" + [Guid]::NewGuid().ToString("N") + ".env"

@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     flowpilot_auth_enabled: bool = True
     flowpilot_api_key: SecretStr | None = None
     flowpilot_api_keys: list[APIKeyRoleBinding] = Field(default_factory=list)
+    flowpilot_max_request_body_bytes: int = Field(
+        default=1_048_576,
+        gt=0,
+        le=16_777_216,
+    )
 
     @field_validator("flowpilot_api_key")
     @classmethod

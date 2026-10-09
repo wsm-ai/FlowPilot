@@ -1,9 +1,11 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = Field(min_length=1, max_length=10_000)
     thread_id: str | None = Field(default=None, min_length=1, max_length=200)
 

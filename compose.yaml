@@ -12,6 +12,7 @@ services:
       FLOWPILOT_AUTH_ENABLED: "${FLOWPILOT_AUTH_ENABLED:-true}"
       FLOWPILOT_API_KEY: "${FLOWPILOT_API_KEY:?FLOWPILOT_API_KEY must be set}"
       FLOWPILOT_API_KEYS: '${FLOWPILOT_API_KEYS:-[]}'
+      FLOWPILOT_MAX_REQUEST_BODY_BYTES: "${FLOWPILOT_MAX_REQUEST_BODY_BYTES:-1048576}"
     volumes:
       - flowpilot_data:/app/data
     ports:

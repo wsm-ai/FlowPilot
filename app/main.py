@@ -29,7 +29,11 @@ from app.retrieval.in_memory_vector_store import InMemoryVectorStore
 from app.retrieval.indexing import KnowledgeBaseIndexer
 from app.retrieval.ingestion import DocumentIngestionService
 from app.retrieval.vector_retriever import VectorRetriever
-from app.security import APIKeyAuthenticationMiddleware
+from app.security import (
+    APIKeyAuthenticationMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import create_default_tool_registry
 
@@ -118,9 +122,14 @@ app = FastAPI(
 )
 
 app.add_middleware(
+    RequestBodyLimitMiddleware,
+    settings_provider=get_settings,
+)
+app.add_middleware(
     APIKeyAuthenticationMiddleware,
     settings_provider=get_settings,
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 register_api_exception_handlers(app)
 
