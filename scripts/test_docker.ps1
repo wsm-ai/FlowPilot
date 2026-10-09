@@ -16,6 +16,7 @@ $checks = [ordered]@{
     "Container startup" = "NOT RUN"
     "Docker healthy" = "NOT RUN"
     "/health endpoint" = "NOT RUN"
+    "API authentication" = "NOT RUN"
     "Non-root user" = "NOT RUN"
     "SQLite writable" = "NOT RUN"
     "Logging configuration" = "NOT RUN"
@@ -32,7 +33,9 @@ $environmentNames = @(
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_BASE_URL",
     "DEEPSEEK_MODEL",
-    "MCP_SERVERS"
+    "MCP_SERVERS",
+    "FLOWPILOT_AUTH_ENABLED",
+    "FLOWPILOT_API_KEY"
 )
 $originalEnvironment = @{}
 
@@ -192,6 +195,8 @@ try {
     [Environment]::SetEnvironmentVariable("DEEPSEEK_BASE_URL", "https://example.invalid", "Process")
     [Environment]::SetEnvironmentVariable("DEEPSEEK_MODEL", "deepseek-v4-flash", "Process")
     [Environment]::SetEnvironmentVariable("MCP_SERVERS", "[]", "Process")
+    [Environment]::SetEnvironmentVariable("FLOWPILOT_AUTH_ENABLED", "true", "Process")
+    [Environment]::SetEnvironmentVariable("FLOWPILOT_API_KEY", "flowpilot-docker-test-key", "Process")
 
     $safeEnvFile = Join-Path ([IO.Path]::GetTempPath()) (
         "flowpilot-13f-" + [Guid]::NewGuid().ToString("N") + ".env"
@@ -223,6 +228,55 @@ try {
         throw "FlowPilot health response is invalid"
     }
     Complete-Check -Name "/health endpoint"
+
+    Start-Check -Name "API authentication"
+    try {
+        $null = Invoke-WebRequest `
+            -Uri "http://127.0.0.1:8000/api/v1/chat" `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body '{"message":""}' `
+            -UseBasicParsing `
+            -TimeoutSec 10
+        throw "Protected API accepted a request without credentials"
+    }
+    catch {
+        if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 401) {
+            throw
+        }
+    }
+    try {
+        $null = Invoke-WebRequest `
+            -Uri "http://127.0.0.1:8000/api/v1/chat" `
+            -Method Post `
+            -Headers @{ Authorization = "Bearer flowpilot-docker-test-key" } `
+            -ContentType "application/json" `
+            -Body '{"message":""}' `
+            -UseBasicParsing `
+            -TimeoutSec 10
+        throw "Authenticated validation request unexpectedly succeeded"
+    }
+    catch {
+        if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 422) {
+            throw
+        }
+    }
+    try {
+        $null = Invoke-WebRequest `
+            -Uri "http://127.0.0.1:8000/mcp" `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body '{}' `
+            -UseBasicParsing `
+            -TimeoutSec 10
+        throw "Mounted MCP application accepted a request without credentials"
+    }
+    catch {
+        if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 401) {
+            throw
+        }
+    }
+    Complete-Check -Name "API authentication"
 
     Start-Check -Name "Non-root user"
     $uid = Invoke-DockerCapture -Arguments (

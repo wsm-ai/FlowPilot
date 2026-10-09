@@ -29,6 +29,7 @@ from app.retrieval.in_memory_vector_store import InMemoryVectorStore
 from app.retrieval.indexing import KnowledgeBaseIndexer
 from app.retrieval.ingestion import DocumentIngestionService
 from app.retrieval.vector_retriever import VectorRetriever
+from app.security import APIKeyAuthenticationMiddleware
 from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import create_default_tool_registry
 
@@ -114,6 +115,11 @@ app = FastAPI(
     description="Enterprise AI Workflow Agent",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    APIKeyAuthenticationMiddleware,
+    settings_provider=get_settings,
 )
 
 register_api_exception_handlers(app)
