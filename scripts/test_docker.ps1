@@ -125,6 +125,9 @@ function Show-ComposeDiagnostics {
             Get-ComposeArguments -Arguments @("logs", "--tail=80", "flowpilot-api")
         )
         if (-not [string]::IsNullOrWhiteSpace($logs)) {
+            $logs = $logs.Replace("flowpilot-docker-test-key", "[REDACTED]")
+            $logs = $logs.Replace("flowpilot-docker-operator-key", "[REDACTED]")
+            $logs = $logs.Replace("ci-test-key", "[REDACTED]")
             Write-Host "--- FlowPilot diagnostic logs ---"
             Write-Host $logs
         }
@@ -348,6 +351,15 @@ database.close()
     )
     if ($logs -notmatch "Uvicorn running" -or $logs -notmatch "GET /health") {
         throw "Expected FlowPilot container logs were not available"
+    }
+    foreach ($testSecret in @(
+        "flowpilot-docker-test-key",
+        "flowpilot-docker-operator-key",
+        "ci-test-key"
+    )) {
+        if ($logs.Contains($testSecret)) {
+            throw "Container logs exposed a test credential"
+        }
     }
     Complete-Check -Name "Logging configuration"
 
