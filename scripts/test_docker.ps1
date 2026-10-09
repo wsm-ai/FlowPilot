@@ -36,6 +36,7 @@ $environmentNames = @(
     "MCP_SERVERS",
     "FLOWPILOT_AUTH_ENABLED",
     "FLOWPILOT_API_KEY"
+    "FLOWPILOT_API_KEYS"
 )
 $originalEnvironment = @{}
 
@@ -197,6 +198,11 @@ try {
     [Environment]::SetEnvironmentVariable("MCP_SERVERS", "[]", "Process")
     [Environment]::SetEnvironmentVariable("FLOWPILOT_AUTH_ENABLED", "true", "Process")
     [Environment]::SetEnvironmentVariable("FLOWPILOT_API_KEY", "flowpilot-docker-test-key", "Process")
+    [Environment]::SetEnvironmentVariable(
+        "FLOWPILOT_API_KEYS",
+        '[{"key":"flowpilot-docker-operator-key","role":"operator"}]',
+        "Process"
+    )
 
     $safeEnvFile = Join-Path ([IO.Path]::GetTempPath()) (
         "flowpilot-13f-" + [Guid]::NewGuid().ToString("N") + ".env"
@@ -255,6 +261,22 @@ try {
             -UseBasicParsing `
             -TimeoutSec 10
         throw "Authenticated validation request unexpectedly succeeded"
+    }
+    catch {
+        if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 422) {
+            throw
+        }
+    }
+    try {
+        $null = Invoke-WebRequest `
+            -Uri "http://127.0.0.1:8000/api/v1/chat" `
+            -Method Post `
+            -Headers @{ Authorization = "Bearer flowpilot-docker-operator-key" } `
+            -ContentType "application/json" `
+            -Body '{"message":""}' `
+            -UseBasicParsing `
+            -TimeoutSec 10
+        throw "Operator authorization validation request unexpectedly succeeded"
     }
     catch {
         if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 422) {

@@ -11,6 +11,7 @@ services:
       MCP_SERVERS: "${MCP_SERVERS:-[]}"
       FLOWPILOT_AUTH_ENABLED: "${FLOWPILOT_AUTH_ENABLED:-true}"
       FLOWPILOT_API_KEY: "${FLOWPILOT_API_KEY:?FLOWPILOT_API_KEY must be set}"
+      FLOWPILOT_API_KEYS: '${FLOWPILOT_API_KEYS:-[]}'
     volumes:
       - flowpilot_data:/app/data
     ports:

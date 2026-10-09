@@ -4,6 +4,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.mcp.config import MCPServerConfig
+from app.security.rbac import APIKeyRoleBinding
 
 
 class Settings(BaseSettings):
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     flowpilot_auth_enabled: bool = True
     flowpilot_api_key: SecretStr | None = None
+    flowpilot_api_keys: list[APIKeyRoleBinding] = Field(default_factory=list)
 
     @field_validator("flowpilot_api_key")
     @classmethod
@@ -29,10 +31,21 @@ class Settings(BaseSettings):
     def require_flowpilot_api_key_when_authentication_is_enabled(
         self,
     ) -> "Settings":
-        if self.flowpilot_auth_enabled and self.flowpilot_api_key is None:
+        if (
+            self.flowpilot_auth_enabled
+            and self.flowpilot_api_key is None
+            and not self.flowpilot_api_keys
+        ):
             raise ValueError(
                 "FLOWPILOT_API_KEY is required when authentication is enabled"
             )
+        configured_keys = [
+            binding.key.get_secret_value() for binding in self.flowpilot_api_keys
+        ]
+        if self.flowpilot_api_key is not None:
+            configured_keys.append(self.flowpilot_api_key.get_secret_value())
+        if len(configured_keys) != len(set(configured_keys)):
+            raise ValueError("FlowPilot API keys must be unique")
         return self
 
     model_config = SettingsConfigDict(
