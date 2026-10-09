@@ -1,0 +1,63 @@
+# Version control and CI metadata
+.git
+.gitignore
+.github
+
+# Secrets and local environment configuration
+.env
+.env.*
+
+# Python caches and test artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_tmp*
+**/.pytest_tmp*
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local Conda installations
+.venv/
+venv/
+env/
+.conda/
+conda/
+anaconda*/
+miniconda*/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local logs, temporary files, and reports
+*.log
+logs/
+*.tmp
+tmp/
+evaluation-report.json
+evaluation-report.md
+reports/
+
+# Local persistence files; the image creates an empty writable /app/data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Development-only sources and build output
+tests/
+dist/
+build/
+*.egg-info/
+README.md
+.env.example
