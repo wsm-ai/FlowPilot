@@ -9,6 +9,7 @@ from app.retrieval.embeddings import EmbeddingError
 from app.retrieval.models import RetrievalQuery
 from app.retrieval.vector_store import VectorStoreError
 from app.tools.base import ToolExecutionError
+from app.security.tool_authorization import ToolRisk
 
 
 DEFAULT_MAX_KNOWLEDGE_OUTPUT_CHARS = 50_000
@@ -44,6 +45,7 @@ class KnowledgeBaseSearchArguments(BaseModel):
 
 class KnowledgeBaseTool:
     name = "search_knowledge_base"
+    risk = ToolRisk.READ_ONLY
     description = (
         "Search the internal knowledge base for evidence relevant to a question "
         "or workflow step. Returns ranked knowledge chunks with source metadata."

@@ -3,6 +3,7 @@ import logging
 from typing import TextIO
 
 from app.observability.models import AgentEvent
+from app.security.redaction import SensitiveDataFilter
 
 
 _EVENT_FIELDS = (
@@ -69,6 +70,7 @@ def create_structured_logging_emitter(
     ):
         handler = logging.StreamHandler(stream)
         handler.setFormatter(StructuredEventFormatter())
+        handler.addFilter(SensitiveDataFilter())
         setattr(handler, _HANDLER_MARKER, True)
         logger.addHandler(handler)
     return StructuredLoggingEmitter(logger)

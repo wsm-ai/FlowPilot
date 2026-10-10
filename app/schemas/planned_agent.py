@@ -1,11 +1,13 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.planning import ExecutionPlan
 
 
 class PlannedAgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     goal: str = Field(min_length=1, max_length=10_000)
     thread_id: str | None = Field(default=None, min_length=1, max_length=200)
 
@@ -46,6 +48,8 @@ class PlannedAgentRunResponse(BaseModel):
 
 
 class ApprovalResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     run_id: str = Field(min_length=1, max_length=200)
     thread_id: str = Field(min_length=1, max_length=200)
     decision: Literal["approve", "reject"]
@@ -59,6 +63,8 @@ class ApprovalResumeRequest(BaseModel):
 
 
 class GroundedAnswerRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     run_id: str = Field(min_length=1, max_length=200)
     thread_id: str = Field(min_length=1, max_length=200)
 

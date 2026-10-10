@@ -42,6 +42,7 @@ from app.services.planned_agent_service import PlannedAgentService
 from app.services.llm_service import LLMService
 from app.services.planner_service import PlannerService, PlanningError
 from app.tools.registry import ToolRegistry
+from app.security.tool_authorization import ToolRisk
 
 
 class Provider:
@@ -100,7 +101,7 @@ async def _components(path: Path, *, trace_id: str = "trace-fixed"):
     await side_repository.initialize()
     tool = SideEffectTool()
     registry = ToolRegistry()
-    registry.register(tool)
+    registry.register(tool, risk=ToolRisk.READ_ONLY)
     planner = PlannerService(
         LLMService(Provider(_plan())),
         registry.definitions(),
@@ -367,7 +368,7 @@ def test_planned_agent_requests_receive_distinct_persisted_traces(
         await repository.initialize()
         emitter = SQLiteTraceEmitter(repository)
         registry = ToolRegistry()
-        registry.register(SideEffectTool())
+        registry.register(SideEffectTool(), risk=ToolRisk.READ_ONLY)
         planner = PlannerService(
             LLMService(Provider(_plan())),
             trace_emitter=emitter,

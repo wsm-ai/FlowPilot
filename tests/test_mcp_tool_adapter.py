@@ -12,6 +12,16 @@ from app.mcp.models import MCPRemoteTool, MCPToolResult
 from app.mcp.tool_adapter import MCPToolAdapter
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
+from app.security.rbac import Role
+from app.security.tool_authorization import (
+    ApprovalGrantAuthority,
+    ApprovedToolExecutionGrant,
+    ToolRisk,
+    tool_execution_role,
+)
+
+
+TEST_APPROVAL_AUTHORITY = ApprovalGrantAuthority()
 
 
 def input_schema():
@@ -65,14 +75,19 @@ def test_adapter_separates_local_registry_name_from_remote_call_name():
     )
     tool = adapter(client)
     registry = ToolRegistry()
-    registry.register(tool)
+    registry.register(tool, risk=ToolRisk.HIGH_RISK)
 
-    result = asyncio.run(
-        registry.execute(
-            "mcp_github_search_issues",
-            {"query": "login"},
-        )
+    grant = TEST_APPROVAL_AUTHORITY.issue(
+        run_id="run-test", thread_id="thread-test", step_id=1,
+        action=tool.name, arguments={"query": "login"},
     )
+    with tool_execution_role(Role.ADMIN), TEST_APPROVAL_AUTHORITY.activate(grant):
+        result = asyncio.run(
+            registry.execute(
+                "mcp_github_search_issues",
+                {"query": "login"},
+            )
+        )
 
     assert tool.name == "mcp_github_search_issues"
     assert client.call_tool_calls == [("search_issues", {"query": "login"})]

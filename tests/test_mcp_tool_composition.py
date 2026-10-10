@@ -4,6 +4,24 @@ from pathlib import Path
 import sys
 
 import pytest
+from app.security.rbac import Role
+from app.security.tool_authorization import (
+    ApprovalGrantAuthority,
+    ApprovedToolExecutionGrant,
+    tool_execution_role,
+)
+
+
+TEST_APPROVAL_AUTHORITY = ApprovalGrantAuthority()
+
+
+def approved(name, arguments):
+    return TEST_APPROVAL_AUTHORITY.activate(
+        TEST_APPROVAL_AUTHORITY.issue(
+            run_id="run-test", thread_id="thread-test", step_id=1,
+            action=name, arguments=arguments,
+        )
+    )
 
 from app.mcp.client import (
     MCPDiscoveryError,
@@ -89,9 +107,12 @@ def test_namespaces_normalizes_and_preserves_remote_call_name():
             [MCPServerClientBinding("github", client)],
         )
     )
-    result = asyncio.run(
-        registry.execute("mcp_github_search_issues", {"query": "login"})
-    )
+    with tool_execution_role(Role.ADMIN), approved(
+        "mcp_github_search_issues", {"query": "login"}
+    ):
+        result = asyncio.run(
+            registry.execute("mcp_github_search_issues", {"query": "login"})
+        )
 
     assert composition.local_names == ("mcp_github_search_issues",)
     assert composition.approval_required_actions == {
@@ -120,8 +141,14 @@ def test_same_remote_name_from_different_servers_is_isolated():
             ],
         )
     )
-    asyncio.run(registry.execute("mcp_github_search", {"query": "a"}))
-    asyncio.run(registry.execute("mcp_linear_search", {"query": "b"}))
+    with tool_execution_role(Role.ADMIN), approved(
+        "mcp_github_search", {"query": "a"}
+    ):
+        asyncio.run(registry.execute("mcp_github_search", {"query": "a"}))
+    with tool_execution_role(Role.ADMIN), approved(
+        "mcp_linear_search", {"query": "b"}
+    ):
+        asyncio.run(registry.execute("mcp_linear_search", {"query": "b"}))
 
     assert composition.local_names == (
         "mcp_github_search",
@@ -530,9 +557,12 @@ def test_real_stdio_discovery_composition_and_registry_execution():
                 registry,
                 [MCPServerClientBinding("test", client)],
             )
-            result = await registry.execute(
+            with tool_execution_role(Role.ADMIN), approved(
                 "mcp_test_add_numbers", {"a": 2, "b": 5}
-            )
+            ):
+                result = await registry.execute(
+                    "mcp_test_add_numbers", {"a": 2, "b": 5}
+                )
             return composition, result
 
     composition, result = asyncio.run(scenario())

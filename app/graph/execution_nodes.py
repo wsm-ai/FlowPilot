@@ -9,6 +9,8 @@ from app.reliability.side_effects import (
     SideEffectExecutor,
 )
 from app.tools.registry import ToolRegistry
+from app.security.tool_authorization import current_approval_grant
+from app.reliability.side_effects import digest_arguments
 
 
 PlanStepExecutor = Callable[[AgentState], Awaitable[dict[str, Any]]]
@@ -85,6 +87,20 @@ def create_approved_plan_step_executor(
             raise SideEffectExecutionError(
                 "Side-effect execution identity is required"
             )
+        thread_id = configurable.get("thread_id")
+        grant = current_approval_grant()
+        if (
+            grant is None
+            or grant.run_id != run_id
+            or grant.thread_id != thread_id
+            or grant.step_id != current_step.id
+            or grant.action != current_step.action
+            or grant.arguments_digest != digest_arguments(current_step.arguments)
+        ):
+            raise SideEffectExecutionError(
+                "Approved execution grant is invalid"
+            )
+        registry.authorize(current_step.action, current_step.arguments)
         result = await side_effect_executor.execute(
             run_id=run_id,
             step_id=current_step.id,

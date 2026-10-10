@@ -4,6 +4,7 @@ import pytest
 
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.schemas.planning import ExecutionPlan, PlanStep
+from app.security.tool_authorization import ToolRisk
 from app.services.approval_workflow_service import (
     ApprovalNotPendingError,
     ApprovalThreadConflictError,
@@ -34,6 +35,7 @@ class FakePlannerService:
 
 class SpyIssueTool:
     name = "create_test_issue"
+    risk = ToolRisk.HIGH_RISK
     description = "Create a test issue"
     parameters = {
         "type": "object",

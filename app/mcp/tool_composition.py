@@ -15,6 +15,7 @@ from app.reliability.degradation import (
 )
 from app.reliability.failures import classify_failure
 from app.tools.registry import ToolRegistry
+from app.security.tool_authorization import ToolRisk
 
 
 _REMOTE_NAME_SEPARATOR = re.compile(r"[^a-z0-9]+")
@@ -109,7 +110,7 @@ async def compose_mcp_tools(
             )
 
     for adapter in adapters:
-        registry.register(adapter)
+        registry.register(adapter, risk=ToolRisk.HIGH_RISK)
 
     names = tuple(adapter.name for adapter in adapters)
     return MCPToolComposition(

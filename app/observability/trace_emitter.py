@@ -47,7 +47,7 @@ class SQLiteTraceEmitter:
     ) -> None:
         self._repository = repository
         self._logger = diagnostic_logger or logging.getLogger(
-            "flowpilot.observability.diagnostics"
+            "flowpilot.diagnostics"
         )
 
     async def emit(self, trace_id: str, event: AgentEvent) -> None:

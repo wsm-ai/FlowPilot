@@ -25,6 +25,7 @@ from app.services.llm_service import LLMService
 from app.services.planner_service import PlannerService, UnavailablePlanActionError
 from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import ToolRegistry, create_default_tool_registry
+from app.security.tool_authorization import ToolRisk
 
 
 def _check(name: str, passed: bool) -> EvaluationCheck:
@@ -58,6 +59,7 @@ class _FunctionScenario:
 
 class _CountingSideEffectTool:
     name = "create_github_issue"
+    risk = ToolRisk.HIGH_RISK
     description = "Create a test-only issue record"
     parameters = {
         "type": "object",

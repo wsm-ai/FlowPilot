@@ -33,6 +33,10 @@ from app.services.grounded_answer_service import GroundedAnswerService
 from app.services.planner_service import PlannerService, PlanningError
 from app.tools.base import ToolExecutionError
 from app.tools.registry import ToolRegistry
+from app.security.tool_authorization import (
+    ApprovalGrantAuthority,
+    ApprovedToolExecutionGrant,
+)
 
 
 ApprovalWorkflowStatus = Literal[
@@ -89,6 +93,7 @@ class ApprovalWorkflowService:
         self._trace_emitter = trace_emitter
         self._clock = clock
         self._trace_id_factory = trace_id_factory
+        self._approval_authority = ApprovalGrantAuthority()
 
     async def start(
         self,
@@ -219,16 +224,29 @@ class ApprovalWorkflowService:
         if not isinstance(snapshot.values.get("pending_approval"), dict):
             raise ApprovalNotPendingError("No pending approval for this thread")
 
+        grant = None
+        if decision == "approve":
+            if not isinstance(run_id, str) or not run_id.strip():
+                raise PlanningError("Approval execution identity is required")
+            grant = self._approval_grant(snapshot, run_id, thread_id)
+
         trace_id = (
             await self._trace_emitter.trace_id_for_thread(thread_id)
             if self._trace_emitter is not None
             else None
         )
 
-        await self._graph.ainvoke(
-            Command(resume={"decision": decision}),
-            config=config,
-        )
+        if grant is None:
+            await self._graph.ainvoke(
+                Command(resume={"decision": decision}),
+                config=config,
+            )
+        else:
+            with self._approval_authority.activate(grant):
+                await self._graph.ainvoke(
+                    Command(resume={"decision": decision}),
+                    config=config,
+                )
         snapshot = await self._graph.aget_state(config)
         result = self._build_result(thread_id, snapshot)
         goal = snapshot.values.get("goal")
@@ -307,6 +325,37 @@ class ApprovalWorkflowService:
             goal=goal,
             plan=plan,
             step_results=step_results,
+        )
+
+    def _approval_grant(
+        self,
+        snapshot: Any,
+        run_id: str,
+        thread_id: str,
+    ) -> ApprovedToolExecutionGrant:
+        values = snapshot.values
+        pending = values.get("pending_approval")
+        index = values.get("current_step_index")
+        if not isinstance(pending, dict) or not isinstance(index, int):
+            raise PlanningError("Pending approval state is invalid")
+        try:
+            plan = ExecutionPlan.model_validate(values.get("plan"))
+            step = plan.steps[index]
+        except (ValueError, IndexError) as exc:
+            raise PlanningError("Pending approval state is invalid") from exc
+        expected = {
+            "step_id": step.id,
+            "action": step.action,
+            "arguments": step.arguments,
+        }
+        if any(pending.get(name) != value for name, value in expected.items()):
+            raise PlanningError("Pending approval state is invalid")
+        return self._approval_authority.issue(
+            run_id=run_id,
+            thread_id=thread_id,
+            step_id=step.id,
+            action=step.action,
+            arguments=step.arguments,
         )
 
     @staticmethod

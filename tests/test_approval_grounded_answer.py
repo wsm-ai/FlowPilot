@@ -5,6 +5,7 @@ import pytest
 from app.grounding.models import GroundedAnswer
 from app.persistence.checkpoint import async_checkpoint_saver
 from app.schemas.planning import ExecutionPlan, PlanStep
+from app.security.tool_authorization import ToolRisk
 from app.services.approval_workflow_service import ApprovalWorkflowService
 from app.services.grounded_answer_service import GroundedAnswerError
 from app.tools.registry import ToolRegistry, create_default_tool_registry
@@ -29,6 +30,7 @@ class FakePlanner:
 
 class SpyTool:
     name = "create_test_issue"
+    risk = ToolRisk.HIGH_RISK
     description = "Create a test issue"
     parameters = {
         "type": "object",

@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 import logging
+import os
 
 from fastapi import FastAPI
 
@@ -29,11 +30,34 @@ from app.retrieval.in_memory_vector_store import InMemoryVectorStore
 from app.retrieval.indexing import KnowledgeBaseIndexer
 from app.retrieval.ingestion import DocumentIngestionService
 from app.retrieval.vector_retriever import VectorRetriever
+from app.security import (
+    APIKeyAuthenticationMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+    configure_sensitive_logging,
+)
+from app.security.tool_authorization import ToolRisk
 from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.registry import create_default_tool_registry
 
 
-_diagnostic_logger = logging.getLogger("flowpilot.observability.diagnostics")
+_diagnostic_logger = logging.getLogger("flowpilot.diagnostics")
+
+
+def _configured_secret_values(settings) -> tuple[str, ...]:
+    values = [settings.deepseek_api_key.get_secret_value()]
+    if settings.flowpilot_api_key is not None:
+        values.append(settings.flowpilot_api_key.get_secret_value())
+    values.extend(
+        binding.key.get_secret_value() for binding in settings.flowpilot_api_keys
+    )
+    for server in settings.mcp_servers:
+        environment_name = getattr(server, "bearer_token_env", None)
+        if environment_name:
+            environment_value = os.environ.get(environment_name)
+            if environment_value:
+                values.append(environment_value)
+    return tuple(values)
 
 
 async def initialize_trace_persistence(
@@ -55,7 +79,9 @@ async def initialize_trace_persistence(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_sensitive_logging()
     settings = get_settings()
+    configure_sensitive_logging(secrets=_configured_secret_values(settings))
     run_repository = SQLiteRunRepository("data/flowpilot.db")
     await run_repository.initialize()
     side_effect_repository = SQLiteSideEffectExecutionRepository(
@@ -73,7 +99,7 @@ async def lifespan(app: FastAPI):
     await bootstrap_demo_knowledge_base(indexer)
     retriever = VectorRetriever(embedding_provider, vector_store)
     registry = create_default_tool_registry()
-    registry.register(KnowledgeBaseTool(retriever))
+    registry.register(KnowledgeBaseTool(retriever), risk=ToolRisk.READ_ONLY)
     async with AsyncExitStack() as exit_stack:
         checkpointer = await exit_stack.enter_async_context(
             async_checkpoint_saver("data/checkpoints.sqlite")
@@ -115,6 +141,16 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    settings_provider=get_settings,
+)
+app.add_middleware(
+    APIKeyAuthenticationMiddleware,
+    settings_provider=get_settings,
+)
+app.add_middleware(SecurityHeadersMiddleware)
 
 register_api_exception_handlers(app)
 
